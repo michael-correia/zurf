@@ -1,12 +1,16 @@
 # zurf
 
-`zurf` is a Z-Wave frame parser utilizing UART to communicate with a Z-Wave radio loaded with the Z-Wave Zniffer firmware. It aims to parse data into a common, higher-level format than the original ABI. Zurf is named so because it rides Z-Waves.
+<p align="center">
+  <img src="zurf_logo.svg" alt="zurf logo" width="300" />
+</p>
+
+`zurf` is a Z-Wave frame parser utilizing UART to communicate with a Z-Wave radio loaded with the Z-Wave Zniffer firmware. It aims to parse data into a common, higher-level format than the original ABI. Zurf is named so because it rides Z-Waves. You can also think of it as Z-Wave Unwrapped RF.
 
 Zurf is a project for me to learn Rust. As such, you may find some amateur mistakes. I welcome feedback and a chance to improve.
 
 ## Features
 
-Right now, `zurf` is bare-bones and only reads Mesh data frames. It does not break them down by command class, nor does it decrypt or unencapsulate messages. These features will come at a later date. The roadmap for this project is to create two separate binaries: one very lightweight daemon that can run on an embedded device (or Linux desktop) and a cross-platform GUI that can run on any OS and receive data from the daemon.
+Right now, `zurf` is bare-bones and only reads Mesh data frames. It does not break them down by command class, nor does  unencapsulate messages. These features will come at a later date. The roadmap for this project is to create two separate binaries: one very lightweight daemon that can run on an embedded device (or Linux desktop) and a cross-platform GUI that can run on any OS and receive data from the daemon. Mesh support is taking priority, with Long Range coming later. S2 Singlecast support is *mostly* working.
 
 ## Licensing
 
@@ -27,6 +31,7 @@ Right now, `zurf` is bare-bones and only reads Mesh data frames. It does not bre
 To run the CLI tool, specify the serial port and the target RF region:
 
 ```bash
-cargo run --release -- --port /dev/ttyUSB0 --region uslr
-```
+cargo run -p zurf-cli -- --port /dev/ttyUSB0 --region uslr  --home-id <home id in hex> --unauthenticated-key <key in hex> --mesh-authenticated-key <key in hex> --mesh-access-control-key <key in hex> --lr-authenticated-key <key in hex> --lr-access-control-key <key in hex>
 
+
+```
