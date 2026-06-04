@@ -6,6 +6,6 @@ description = "CLI tool for the zurf Z-Wave parser"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-zurf = { path = "../zurf" }
+zurf = { path = "../zurf", version = "0.2.0" }
 io-uring = "0.7.11"
 libc = "0.2.185"
