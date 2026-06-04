@@ -1,9 +1,9 @@
 [package]
 name = "zurf_enum_derive"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Internal enum deriving macro for the zurf Z-Wave Zniffer crate"
-license = "LGPL-3.0-or-later AND GPL-3.0-or-later"
+license = "LGPL-3.0-or-later"
 repository = "https://github.com/michael-correia/zurf"
 
 [dependencies]

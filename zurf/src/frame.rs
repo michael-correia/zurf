@@ -1,26 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-use zurf_enum_derive::TryFromU8;
-
 use crate::{
     mpdu::Data,
-    types::{Channel, Hop, NodeId, ParseError, ParseResult, Rssi},
+    types::{Channel, DataSpeed, Hop, NodeId, ParseError, ParseResult, Rssi},
 };
-
-#[repr(u8)]
-#[derive(TryFromU8, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataSpeed {
-    Mesh9600 = 0,
-    Mesh40k = 1,
-    Mesh100k = 2,
-    LongRange100k = 3,
-}
-
-impl DataSpeed {
-    pub fn is_long_range(&self) -> bool {
-        matches!(self, DataSpeed::LongRange100k)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BeamStart {
@@ -120,6 +103,59 @@ impl DeserializeFrame for BeamEnd {
     }
 }
 
+impl DeserializeFrame for Data {
+    fn deserialize<'a>(data: &'a [u8]) -> ParseResult<'a, (Self, FrameParseMetadata)> {
+        // Rather than just returning incomplete length up-front, return validation errors first so that we can return to the SOF hunt
+        if data.is_empty() {
+            return Err(ParseError::Empty);
+        }
+        // Timestamp hardcoded to 0, ignore it instead of validating in case it ever gets populated
+        let (_, data) = data.split_at_checked(2).ok_or(ParseError::Incomplete)?;
+
+        let (&channel_speed, data) = data.split_first().ok_or(ParseError::Incomplete)?;
+
+        let data_speed =
+            DataSpeed::try_from(channel_speed & 0x1F).map_err(|_| ParseError::Invalid)?;
+        let channel = Channel::try_from(channel_speed >> 5).map_err(|_| ParseError::Invalid)?;
+
+        if channel.is_long_range() != data_speed.is_long_range() {
+            return Err(ParseError::Invalid);
+        }
+
+        // Ignore region - Already know it from radio configuration
+        let (&_, data) = data.split_first().ok_or(ParseError::Incomplete)?;
+
+        let (&rssi, data) = data.split_first().ok_or(ParseError::Incomplete)?;
+        let rssi = Hop::rssi_from_byte(rssi);
+
+        let (start_of_data_marker, data) =
+            data.split_at_checked(2).ok_or(ParseError::Incomplete)?;
+        if start_of_data_marker != [0x21, 0x03] {
+            return Err(ParseError::Invalid);
+        }
+
+        let (&len, data) = data.split_first().ok_or(ParseError::Incomplete)?;
+        let len = len as usize;
+        if len > data.len() {
+            return Err(ParseError::Incomplete);
+        }
+        let (mpdu_bytes, _) = data.split_at(len);
+        let (mpdu, rest) = Data::mpdu_deserialize(mpdu_bytes, &channel, &data_speed)?;
+
+        Ok((
+            (
+                mpdu,
+                FrameParseMetadata {
+                    data_speed: Some(data_speed),
+                    channel: Some(channel),
+                    rssi,
+                },
+            ),
+            rest,
+        ))
+    }
+}
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Markers {
@@ -130,7 +166,7 @@ enum Markers {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameType {
     //Command { cmd: u8, len: u8, payload: Vec<u8> } = 0x00, // We'll ignored command so we can create metadata struct
-    Data(Data) = 0x01,
+    Data(Box<Data>) = 0x01,
     BeamStart(BeamStart) = 0x04,
     BeamEnd(BeamEnd) = 0x05,
 }
@@ -163,7 +199,7 @@ impl Frame {
         let (payload, metadata, rest) = match *frame_type {
             0x01 => {
                 let ((inner, meta), rest) = Data::deserialize(rest)?;
-                (FrameType::Data(inner), meta, rest)
+                (FrameType::Data(Box::new(inner)), meta, rest)
             }
             0x04 => {
                 let ((inner, meta), rest) = BeamStart::deserialize(rest)?;
@@ -457,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_beam_end_truncations() {
-        let base = vec![0x00, 0x00, 0x30, 0x00, 0xE7];
+        let base = [0x00, 0x00, 0x30, 0x00, 0xE7];
         for len in 0..base.len() {
             assert!(matches!(
                 BeamEnd::deserialize(&base[..len]),

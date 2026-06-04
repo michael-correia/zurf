@@ -1,6 +1,6 @@
 use super::*;
-use crate::frame::DataSpeed;
-use crate::types::Channel;
+use crate::types::{self, Channel};
+use types::DataSpeed;
 
 #[test]
 fn test_deserialize_singlecast() {
@@ -18,7 +18,10 @@ fn test_deserialize_singlecast() {
     assert!(!mpdu.speed_modified);
     assert_eq!(mpdu.sequence_number, 1);
     assert_eq!(mpdu.destination, Destination::Single(NodeId(1)));
-    assert_eq!(mpdu.payload, Some(vec![0x9F, 0x01, 0x2D]));
+    assert_eq!(
+        mpdu.payload,
+        Some(EncapsulationCommand::Unencapsulated(vec![0x9F, 0x01, 0x2D]))
+    );
 }
 
 #[test]
@@ -37,7 +40,10 @@ fn test_deserialize_singlecast_back_to_back() {
     assert!(!mpdu.speed_modified);
     assert_eq!(mpdu.sequence_number, 1);
     assert_eq!(mpdu.destination, Destination::Single(NodeId(1)));
-    assert_eq!(*mpdu.payload.as_ref().unwrap(), vec![0x9F, 0x01, 0x2D]);
+    assert_eq!(
+        mpdu.payload.as_ref().unwrap(),
+        &EncapsulationCommand::Unencapsulated(vec![0x9F, 0x01, 0x2D])
+    );
 
     // There's an exact copy still left. This wouldn't really happen, but it's easy to test.
     let (mpdu2, empty) =
@@ -138,7 +144,9 @@ fn test_deserialize_real_zniffer_data() {
     assert_eq!(mpdu1.destination, Destination::Single(NodeId(6)));
     assert_eq!(
         mpdu1.payload,
-        Some(vec![0x60, 0x0D, 0x01, 0x02, 0x25, 0x01, 0xFF])
+        Some(EncapsulationCommand::Unencapsulated(vec![
+            0x60, 0x0D, 0x01, 0x02, 0x25, 0x01, 0xFF
+        ]))
     );
     assert_eq!(mpdu1.checksum, Some(CRCMode::CrcCcitt(0x0182)));
     assert!(remainder1.is_empty());
@@ -169,7 +177,10 @@ fn test_deserialize_real_zniffer_data() {
     assert_eq!(mpdu3.header_type, MpduHeaderType::Singlecast);
     assert_eq!(mpdu3.sequence_number, 5);
     assert_eq!(mpdu3.destination, Destination::Single(NodeId(1)));
-    assert_eq!(mpdu3.payload, Some(vec![0x25, 0x03, 0xFF]));
+    assert_eq!(
+        mpdu3.payload,
+        Some(EncapsulationCommand::Unencapsulated(vec![0x25, 0x03, 0xFF]))
+    );
     assert_eq!(mpdu3.checksum, Some(CRCMode::CrcCcitt(0x83AE)));
     assert!(remainder3.is_empty());
 
@@ -182,9 +193,9 @@ fn test_deserialize_real_zniffer_data() {
         Data::mpdu_deserialize(&frame5_bytes, &Channel::Mesh2, &DataSpeed::Mesh100k).unwrap();
     assert_eq!(
         mpdu5.payload,
-        Some(vec![
+        Some(EncapsulationCommand::Unencapsulated(vec![
             0x32, 0x02, 0x21, 0x34, 0x00, 0x00, 0x00, 0x54, 0x00, 0x00
-        ])
+        ]))
     );
     assert_eq!(mpdu5.checksum, Some(CRCMode::CrcCcitt(0x25CC)));
     assert!(remainder5.is_empty());
@@ -209,7 +220,10 @@ fn test_deserialize_routed_singlecast_extension() {
     assert!(!mpdu.ack_requested);
     assert_eq!(mpdu.sequence_number, 11);
     assert_eq!(mpdu.destination, Destination::Single(NodeId(86)));
-    assert_eq!(mpdu.payload, Some(vec![0x00])); // NoOp command class
+    assert_eq!(
+        mpdu.payload,
+        Some(EncapsulationCommand::Unencapsulated(vec![0x00]))
+    ); // NoOp command class
     assert_eq!(mpdu.checksum, Some(CRCMode::CrcCcitt(calculated_crc)));
     assert!(remainder.is_empty());
 
@@ -244,7 +258,10 @@ fn test_deserialize_extended_routing_header() {
     assert_eq!(mpdu.header_type, MpduHeaderType::Routed);
     assert_eq!(mpdu.sequence_number, 11);
     assert_eq!(mpdu.destination, Destination::Single(NodeId(86)));
-    assert_eq!(mpdu.payload, Some(vec![0x00]));
+    assert_eq!(
+        mpdu.payload,
+        Some(EncapsulationCommand::Unencapsulated(vec![0x00]))
+    );
     assert_eq!(mpdu.checksum, Some(CRCMode::CrcCcitt(calculated_crc)));
     assert!(remainder.is_empty());
 
@@ -286,7 +303,10 @@ fn test_deserialize_channel3_routed_header() {
     assert_eq!(mpdu.header_type, MpduHeaderType::Routed);
     assert_eq!(mpdu.sequence_number, 11);
     assert_eq!(mpdu.destination, Destination::Single(NodeId(86)));
-    assert_eq!(mpdu.payload, Some(vec![0x00]));
+    assert_eq!(
+        mpdu.payload,
+        Some(EncapsulationCommand::Unencapsulated(vec![0x00]))
+    );
     assert_eq!(mpdu.checksum, Some(CRCMode::CrcCcitt(calculated_crc)));
     assert!(remainder.is_empty());
 
@@ -321,7 +341,9 @@ fn test_deserialize_explorer_normal() {
     assert_eq!(mpdu1.destination, Destination::Single(NodeId(1)));
     assert_eq!(
         mpdu1.payload,
-        Some(vec![0x56, 0x01, 0x25, 0x03, 0xFF, 0x79, 0x58])
+        Some(EncapsulationCommand::Unencapsulated(vec![
+            0x56, 0x01, 0x25, 0x03, 0xFF, 0x79, 0x58
+        ]))
     );
     assert_eq!(mpdu1.checksum, Some(CRCMode::XorChecksum(0x40)));
     assert!(remainder1.is_empty());
@@ -350,7 +372,9 @@ fn test_deserialize_explorer_normal() {
     assert_eq!(mpdu2.destination, Destination::Single(NodeId(1)));
     assert_eq!(
         mpdu2.payload,
-        Some(vec![0x56, 0x01, 0x25, 0x03, 0xFF, 0x79, 0x58])
+        Some(EncapsulationCommand::Unencapsulated(vec![
+            0x56, 0x01, 0x25, 0x03, 0xFF, 0x79, 0x58
+        ]))
     );
     assert_eq!(mpdu2.checksum, Some(CRCMode::XorChecksum(0x2F)));
     assert!(remainder2.is_empty());
@@ -380,7 +404,10 @@ fn test_deserialize_singlecast_node8() {
     assert!(!mpdu.speed_modified);
     assert_eq!(mpdu.sequence_number, 4);
     assert_eq!(mpdu.destination, Destination::Single(NodeId(8)));
-    assert_eq!(mpdu.payload, Some(vec![0x00]));
+    assert_eq!(
+        mpdu.payload,
+        Some(EncapsulationCommand::Unencapsulated(vec![0x00]))
+    );
     assert_eq!(mpdu.checksum, Some(CRCMode::XorChecksum(0xC9)));
     assert!(remainder.is_empty());
 }
@@ -451,7 +478,9 @@ fn test_deserialize_multicast_forum_report() {
     }
     assert_eq!(
         mpdu.payload,
-        Some(vec![0x71, 0x05, 0x00, 0x00, 0x00, 0xFF, 0x07, 0x08, 0x00])
+        Some(EncapsulationCommand::Unencapsulated(vec![
+            0x71, 0x05, 0x00, 0x00, 0x00, 0xFF, 0x07, 0x08, 0x00
+        ]))
     );
     assert!(remainder.is_empty());
 }

@@ -1,11 +1,15 @@
-// SPDX-License-Identifier: LGPL-3.0-or-later
-
 use zurf_enum_derive::TryFromU8;
 
 use crate::{
-    frame::{DataSpeed, DeserializeFrame, FrameParseMetadata},
-    types::{Channel, HomeId, Hop, NodeId, ParseError, ParseResult, RssiError},
+    security::s2::{EncryptedEncapsulation, NonceReport},
+    types::{
+        Channel, DataSpeed, Destination, HomeId, Hop, NodeId, ParseError, ParseResult, RssiError,
+    },
 };
+
+// ==========================================
+// Enums
+// ==========================================
 
 #[repr(u8)]
 #[derive(TryFromU8, Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,19 +27,6 @@ pub enum MpduHeaderType {
     Broadcast = 10,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Destination {
-    Single(NodeId),
-    Multicast(Vec<NodeId>),
-    Broadcast,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RoutingExtension {
-    Routed(RoutedNetworkProtocolDataUnit),
-    Explore(ExploreNetworkProtocolDataUnit),
-}
-
 #[repr(u8)]
 #[derive(TryFromU8, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutingResult {
@@ -49,6 +40,77 @@ pub enum BeamingType {
     Short,
     Fragmented,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplorerDirection {
+    Inbound,
+    Outbound,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExplorerPayload {
+    Normal,
+    InclusionInformation {
+        home_id: Option<HomeId>,
+    },
+    Search {
+        source_node_id: NodeId,
+        frame_handle: u8,
+        result_repeaters: Vec<NodeId>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CRCMode {
+    CrcCcitt(u16),
+    XorChecksum(u8),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncapsulationCommand {
+    SupervisionGet(Box<EncapsulationCommand>),
+    Security2Encrypted(EncryptedEncapsulation, Vec<u8>),
+    Security2Decrypted(EncryptedEncapsulation, Box<EncapsulationCommand>),
+    Security0(Box<EncapsulationCommand>),
+    CRC16(Box<EncapsulationCommand>),
+    MultiCommand(Vec<EncapsulationCommand>),
+    //MultiChannel ?,
+    S2Nonce(NonceReport),
+    Unencapsulated(Vec<u8>),
+}
+
+impl EncapsulationCommand {
+    pub fn parse(
+        data: &[u8],
+        sender: &NodeId,
+        receiver: &crate::types::Destination,
+        home_id: &crate::types::HomeId,
+    ) -> Self {
+        match data.get(..2) {
+            Some(&[0x9F, 0x02]) => NonceReport::deserialize(data)
+                .map(EncapsulationCommand::S2Nonce)
+                .unwrap_or_else(|| EncapsulationCommand::Unencapsulated(data.to_vec())),
+            Some(&[0x9F, 0x03]) => {
+                EncryptedEncapsulation::deserialize(data, sender, receiver, home_id)
+                    .map(|(encap, ciphertext)| {
+                        EncapsulationCommand::Security2Encrypted(encap, ciphertext.to_vec())
+                    })
+                    .unwrap_or_else(|| EncapsulationCommand::Unencapsulated(data.to_vec()))
+            }
+            _ => EncapsulationCommand::Unencapsulated(data.to_vec()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoutingExtension {
+    Routed(RoutedNetworkProtocolDataUnit),
+    Explore(ExploreNetworkProtocolDataUnit),
+}
+
+// ==========================================
+// Structs & Implementations
+// ==========================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutedNetworkProtocolDataUnit {
@@ -143,25 +205,6 @@ impl RoutedNetworkProtocolDataUnit {
             &data[index..],
         ))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExplorerPayload {
-    Normal,
-    InclusionInformation {
-        home_id: Option<HomeId>,
-    },
-    Search {
-        source_node_id: NodeId,
-        frame_handle: u8,
-        result_repeaters: Vec<NodeId>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExplorerDirection {
-    Inbound,
-    Outbound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,12 +309,6 @@ impl ExploreNetworkProtocolDataUnit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CRCMode {
-    CrcCcitt(u16),
-    XorChecksum(u8),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Data {
     pub home_id: HomeId,
@@ -284,8 +321,27 @@ pub struct Data {
     pub routing_extension: Option<RoutingExtension>, // Channels 1 and 2. Channel 3 cannot be routed
     pub destination: Destination,
     pub beaming: Option<BeamingType>,
-    pub payload: Option<Vec<u8>>,
+    pub payload: Option<EncapsulationCommand>,
     pub checksum: Option<CRCMode>,
+}
+
+impl std::default::Default for Data {
+    fn default() -> Self {
+        Self {
+            home_id: HomeId::default(),
+            source_node_id: NodeId::default(),
+            header_type: MpduHeaderType::Singlecast,
+            ack_requested: false,
+            low_power: false,
+            speed_modified: false,
+            sequence_number: 0,
+            routing_extension: None,
+            destination: Destination::Single(NodeId::default()),
+            beaming: None,
+            payload: None,
+            checksum: None,
+        }
+    }
 }
 
 impl Data {
@@ -313,22 +369,7 @@ impl Data {
         })
     }
 
-    pub fn default() -> Self {
-        Self {
-            home_id: HomeId::default(),
-            source_node_id: NodeId::default(),
-            header_type: MpduHeaderType::Singlecast,
-            ack_requested: false,
-            low_power: false,
-            speed_modified: false,
-            sequence_number: 0,
-            routing_extension: None,
-            destination: Destination::Single(NodeId::default()),
-            beaming: None,
-            payload: None,
-            checksum: None,
-        }
-    }
+    pub fn generate_aad(&self) {}
 
     pub fn mpdu_deserialize<'a>(
         data: &'a [u8],
@@ -481,7 +522,7 @@ impl Data {
 
         let mpdu_bytes = data.get(0..mpdu_len_usize).ok_or(ParseError::Incomplete)?;
 
-        match speed {
+        let payload_end = match speed {
             DataSpeed::Mesh100k | DataSpeed::LongRange100k => {
                 // 16-bit CRC
                 let (crc_bytes, expected_crc) = mpdu_bytes.split_at(mpdu_len_usize - 2);
@@ -490,12 +531,8 @@ impl Data {
                 if calculated_crc == expected_crc {
                     mpdu.checksum = Some(CRCMode::CrcCcitt(calculated_crc));
                 }
-                let payload_end = mpdu_len_usize.saturating_sub(2);
-                if index < payload_end {
-                    let payload_slice =
-                        data.get(index..payload_end).ok_or(ParseError::Incomplete)?;
-                    mpdu.payload = Some(payload_slice.to_vec());
-                }
+
+                mpdu_len_usize.saturating_sub(2)
             }
             _ => {
                 // xor 8-bit CRC
@@ -505,71 +542,30 @@ impl Data {
                 if calculated_crc == expected_crc {
                     mpdu.checksum = Some(CRCMode::XorChecksum(calculated_crc));
                 }
-                let payload_end = mpdu_len_usize.saturating_sub(1);
-                if index < payload_end {
-                    let payload_slice =
-                        data.get(index..payload_end).ok_or(ParseError::Incomplete)?;
-                    mpdu.payload = Some(payload_slice.to_vec());
-                }
+                mpdu_len_usize.saturating_sub(1)
             }
+        };
+
+        if index < payload_end {
+            let payload = data
+                .get(index..payload_end)
+                .ok_or(ParseError::Incomplete)?
+                .to_vec();
+            mpdu.payload = Some(EncapsulationCommand::parse(
+                &payload,
+                &mpdu.source_node_id,
+                &mpdu.destination,
+                &mpdu.home_id,
+            ));
         }
 
         Ok((mpdu, &data[mpdu_len_usize..]))
     }
 }
 
-impl DeserializeFrame for Data {
-    fn deserialize<'a>(data: &'a [u8]) -> ParseResult<'a, (Self, FrameParseMetadata)> {
-        // Rather than just returning incomplete length up-front, return validation errors first so that we can return to the SOF hunt
-        if data.is_empty() {
-            return Err(ParseError::Empty);
-        }
-        // Timestamp hardcoded to 0, ignore it instead of validating in case it ever gets populated
-        let (_, data) = data.split_at_checked(2).ok_or(ParseError::Incomplete)?;
-
-        let (&channel_speed, data) = data.split_first().ok_or(ParseError::Incomplete)?;
-
-        let data_speed =
-            DataSpeed::try_from(channel_speed & 0x1F).map_err(|_| ParseError::Invalid)?;
-        let channel = Channel::try_from(channel_speed >> 5).map_err(|_| ParseError::Invalid)?;
-
-        if channel.is_long_range() != data_speed.is_long_range() {
-            return Err(ParseError::Invalid);
-        }
-
-        // Ignore region - Already know it from radio configuration
-        let (&_, data) = data.split_first().ok_or(ParseError::Incomplete)?;
-
-        let (&rssi, data) = data.split_first().ok_or(ParseError::Incomplete)?;
-        let rssi = Hop::rssi_from_byte(rssi);
-
-        let (start_of_data_marker, data) =
-            data.split_at_checked(2).ok_or(ParseError::Incomplete)?;
-        if start_of_data_marker != [0x21, 0x03] {
-            return Err(ParseError::Invalid);
-        }
-
-        let (&len, data) = data.split_first().ok_or(ParseError::Incomplete)?;
-        let len = len as usize;
-        if len > data.len() {
-            return Err(ParseError::Incomplete);
-        }
-        let (mpdu_bytes, _) = data.split_at(len);
-        let (mpdu, rest) = Data::mpdu_deserialize(mpdu_bytes, &channel, &data_speed)?;
-
-        Ok((
-            (
-                mpdu,
-                FrameParseMetadata {
-                    data_speed: Some(data_speed),
-                    channel: Some(channel),
-                    rssi,
-                },
-            ),
-            rest,
-        ))
-    }
-}
+// ==========================================
+// Tests
+// ==========================================
 
 #[cfg(test)]
 #[path = "mpdu_tests.rs"]

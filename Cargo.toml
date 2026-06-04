@@ -1,23 +1,6 @@
-[package]
-name = "zurf"
-version = "0.1.1"
-edition = "2024"
-description = "A Z-Wave Zniffer UART protocol parser using io-uring"
-license = "LGPL-3.0-or-later AND GPL-3.0-or-later"
-repository = "https://github.com/michael-correia/zurf"
-
-[dependencies]
-aes = { version = "0.9.0", default-features = false }
-ccm = { version = "0.6.0-rc.3", default-features = false }
-cmac = { version = "0.8.0", default-features = false }
-io-uring = "0.7.11"
-libc = "0.2.185"
-zurf_enum_derive = { path = "enum_derive", version = "0.1.0" }
-
-[profile.release]
-opt-level=3
-lto="fat"
-
-[dev-dependencies]
-hex = "0.4.3"
-hex-literal = "1.1.0"
+[workspace]
+resolver = "2"
+members = [
+    "zurf",
+    "zurf-cli",
+]
