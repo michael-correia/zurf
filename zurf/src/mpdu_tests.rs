@@ -765,3 +765,39 @@ fn test_lr_deserialize_ack() {
     assert_eq!(mpdu.checksum, Some(CRCMode::CrcCcitt(crc)));
     assert!(remainder.is_empty());
 }
+
+#[test]
+fn test_lr_deserialize_with_extension() {
+    let mut data = vec![
+        0xFD, 0xD0, 0x9B, 0xC7, // Home ID
+        0x00, 0x11, 0x00, // SRC = 1, DST = 0x100
+        26,   // mpdu_len_size (14 + 1 control + 3 extension data + 8 payload)
+        0x41, // Frame Control (Singlecast | has_extension)
+        0x02, // Sequence number (2)
+        0xA4, // Noise floor (-92)
+        0xFA, // Tx power (-6)
+        0x03, // Extension control (type 0, length 3)
+        0xAA, 0xBB, 0xCC, // Extension data
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // Payload
+    ];
+    let crc = Data::crc_ccitt(&data);
+    data.extend_from_slice(&crc.to_be_bytes());
+
+    let (mpdu, remainder) =
+        Data::mpdu_deserialize(&data, &Channel::LongRangeA, &DataSpeed::LongRange100k).unwrap();
+    assert_eq!(mpdu.home_id, HomeId(0xFDD09BC7));
+    assert_eq!(mpdu.source_node_id, NodeId(1));
+    assert_eq!(mpdu.destination, Destination::Single(NodeId(0x100)));
+    assert_eq!(mpdu.header_type, MpduHeaderType::Singlecast);
+    assert_eq!(mpdu.sequence_number, 2);
+    assert_eq!(mpdu.noise_floor, Some(Ok(-92)));
+    assert_eq!(mpdu.tx_power, Some(Ok(-6)));
+    assert_eq!(
+        mpdu.payload,
+        Some(EncapsulationCommand::Unencapsulated(vec![
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
+        ]))
+    );
+    assert_eq!(mpdu.checksum, Some(CRCMode::CrcCcitt(crc)));
+    assert!(remainder.is_empty());
+}

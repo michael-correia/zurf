@@ -597,8 +597,9 @@ impl Data {
         index += 1;
 
         let frame_control = *data.get(index).ok_or(ParseError::Incomplete)?;
-        mpdu.header_type = match (&mpdu.destination, frame_control) {
-            (Destination::Broadcast, _) => MpduHeaderType::Broadcast,
+        let has_extension = frame_control & 0b0100_0000 != 0;
+        mpdu.header_type = match (&mpdu.destination, &frame_control & 0b0000_0111) {
+            (Destination::Broadcast, 0x01) => MpduHeaderType::Broadcast,
             (_, 0x3) => MpduHeaderType::Ack,
             _ => MpduHeaderType::Singlecast,
         };
@@ -617,7 +618,7 @@ impl Data {
         ));
         index += 1;
 
-        let mdsu_size = match mpdu.header_type {
+        let mut mdsu_size = match mpdu.header_type {
             MpduHeaderType::Ack => mpdu_len_size.saturating_sub(15),
             _ => mpdu_len_size.saturating_sub(14),
         };
@@ -627,6 +628,16 @@ impl Data {
                 *data.get(index).ok_or(ParseError::Incomplete)?,
             ));
             index += 1;
+        }
+
+        if has_extension {
+            let extension_control = *data.get(index).ok_or(ParseError::Incomplete)?;
+            index += 1;
+
+            // We're just going to ignore it for now
+            let extension_data_length = (extension_control & 0b0000_0111) as usize;
+            index += extension_data_length;
+            mdsu_size = mdsu_size.saturating_sub(extension_data_length + 1);
         }
 
         if mdsu_size > 0 {
