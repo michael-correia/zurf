@@ -3,7 +3,8 @@ use zurf_enum_derive::TryFromU8;
 use crate::{
     security::s2::{EncryptedEncapsulation, NonceReport},
     types::{
-        Channel, DataSpeed, Destination, HomeId, Hop, NodeId, ParseError, ParseResult, RssiError,
+        Channel, DataSpeed, Destination, HomeId, Hop, NodeId, ParseError, ParseResult, Rssi,
+        RssiError, lr_rssi_from_byte, noise_floor_from_byte, tx_power_from_byte,
     },
 };
 
@@ -323,6 +324,9 @@ pub struct Data {
     pub beaming: Option<BeamingType>,
     pub payload: Option<EncapsulationCommand>,
     pub checksum: Option<CRCMode>,
+    pub noise_floor: Option<Rssi>,
+    pub tx_power: Option<Rssi>,
+    pub incoming_rssi: Option<Rssi>,
 }
 
 impl std::default::Default for Data {
@@ -340,6 +344,9 @@ impl std::default::Default for Data {
             beaming: None,
             payload: None,
             checksum: None,
+            noise_floor: None,
+            tx_power: None,
+            incoming_rssi: None,
         }
     }
 }
@@ -369,9 +376,7 @@ impl Data {
         })
     }
 
-    pub fn generate_aad(&self) {}
-
-    pub fn mpdu_deserialize<'a>(
+    pub fn mesh_deserialize<'a>(
         data: &'a [u8],
         channel: &Channel,
         speed: &DataSpeed,
@@ -447,8 +452,8 @@ impl Data {
             _ => return Err(ParseError::Invalid),
         };
 
-        let mpdu_len_usize = *mpdu_length as usize;
-        if mpdu_len_usize < min_len || mpdu_len_usize > max_len || data.len() < mpdu_len_usize {
+        let mpdu_len_size = *mpdu_length as usize;
+        if mpdu_len_size < min_len || mpdu_len_size > max_len || data.len() < mpdu_len_size {
             return Err(ParseError::Invalid);
         }
 
@@ -489,6 +494,7 @@ impl Data {
                         .collect(),
                 );
             }
+
             MpduHeaderType::Singlecast
             | MpduHeaderType::Explore
             | MpduHeaderType::Routed
@@ -520,29 +526,29 @@ impl Data {
             _ => None,
         };
 
-        let mpdu_bytes = data.get(0..mpdu_len_usize).ok_or(ParseError::Incomplete)?;
+        let mpdu_bytes = data.get(0..mpdu_len_size).ok_or(ParseError::Incomplete)?;
 
         let payload_end = match speed {
             DataSpeed::Mesh100k | DataSpeed::LongRange100k => {
                 // 16-bit CRC
-                let (crc_bytes, expected_crc) = mpdu_bytes.split_at(mpdu_len_usize - 2);
+                let (crc_bytes, expected_crc) = mpdu_bytes.split_at(mpdu_len_size - 2);
                 let expected_crc = u16::from_be_bytes(expected_crc.try_into().unwrap());
                 let calculated_crc = Self::crc_ccitt(crc_bytes);
                 if calculated_crc == expected_crc {
                     mpdu.checksum = Some(CRCMode::CrcCcitt(calculated_crc));
                 }
 
-                mpdu_len_usize.saturating_sub(2)
+                mpdu_len_size.saturating_sub(2)
             }
             _ => {
                 // xor 8-bit CRC
-                let (crc_bytes, expected_crc) = mpdu_bytes.split_at(mpdu_len_usize - 1);
+                let (crc_bytes, expected_crc) = mpdu_bytes.split_at(mpdu_len_size - 1);
                 let expected_crc: u8 = expected_crc[0];
                 let calculated_crc = Self::xor_checksum(crc_bytes);
                 if calculated_crc == expected_crc {
                     mpdu.checksum = Some(CRCMode::XorChecksum(calculated_crc));
                 }
-                mpdu_len_usize.saturating_sub(1)
+                mpdu_len_size.saturating_sub(1)
             }
         };
 
@@ -559,7 +565,101 @@ impl Data {
             ));
         }
 
-        Ok((mpdu, &data[mpdu_len_usize..]))
+        Ok((mpdu, &data[mpdu_len_size..]))
+    }
+
+    pub fn lr_deserialize<'a>(data: &'a [u8]) -> ParseResult<'a, Self> {
+        if data.is_empty() {
+            return Err(ParseError::Empty);
+        }
+        let mut index: usize = 0;
+        let mut mpdu = Self::default();
+
+        let home_bytes = data.get(index..index + 4).ok_or(ParseError::Incomplete)?;
+        mpdu.home_id = HomeId(u32::from_be_bytes(home_bytes.try_into().unwrap()));
+        index += 4;
+
+        let sender_and_receiver = data.get(index..index + 3).ok_or(ParseError::Incomplete)?;
+        index += 3;
+
+        mpdu.source_node_id =
+            NodeId(((sender_and_receiver[0] as u16) << 4) | ((sender_and_receiver[1] >> 4) as u16));
+
+        let dest =
+            (((sender_and_receiver[1] & 0x0F) as u16) << 8) | (sender_and_receiver[2] as u16);
+
+        mpdu.destination = match dest {
+            0xFFF => Destination::Broadcast,
+            _ => Destination::Single(NodeId(dest)),
+        };
+
+        let mpdu_len_size = *data.get(index).ok_or(ParseError::Incomplete)? as usize;
+        index += 1;
+
+        let frame_control = *data.get(index).ok_or(ParseError::Incomplete)?;
+        mpdu.header_type = match (&mpdu.destination, frame_control) {
+            (Destination::Broadcast, _) => MpduHeaderType::Broadcast,
+            (_, 0x3) => MpduHeaderType::Ack,
+            _ => MpduHeaderType::Singlecast,
+        };
+        index += 1;
+
+        mpdu.sequence_number = *data.get(index).ok_or(ParseError::Incomplete)?;
+        index += 1;
+
+        mpdu.noise_floor = Some(noise_floor_from_byte(
+            *data.get(index).ok_or(ParseError::Incomplete)?,
+        ));
+        index += 1;
+
+        mpdu.tx_power = Some(tx_power_from_byte(
+            *data.get(index).ok_or(ParseError::Incomplete)?,
+        ));
+        index += 1;
+
+        let mdsu_size = match mpdu.header_type {
+            MpduHeaderType::Ack => mpdu_len_size.saturating_sub(15),
+            _ => mpdu_len_size.saturating_sub(14),
+        };
+
+        if mpdu.header_type == MpduHeaderType::Ack {
+            mpdu.incoming_rssi = Some(lr_rssi_from_byte(
+                *data.get(index).ok_or(ParseError::Incomplete)?,
+            ));
+            index += 1;
+        }
+
+        if mdsu_size > 0 {
+            mpdu.payload = Some(EncapsulationCommand::parse(
+                data.get(index..index + mdsu_size)
+                    .ok_or(ParseError::Incomplete)?,
+                &mpdu.source_node_id,
+                &mpdu.destination,
+                &mpdu.home_id,
+            ));
+            index += mdsu_size;
+        }
+
+        let expected_crc = data.get(index..index + 2).ok_or(ParseError::Incomplete)?;
+        let expected_crc = u16::from_be_bytes(expected_crc.try_into().unwrap());
+        let calculated_crc = Self::crc_ccitt(data.get(0..index).unwrap());
+        index += 2;
+        if calculated_crc == expected_crc {
+            mpdu.checksum = Some(CRCMode::CrcCcitt(calculated_crc));
+        }
+
+        Ok((mpdu, &data[index..]))
+    }
+
+    pub fn mpdu_deserialize<'a>(
+        data: &'a [u8],
+        channel: &Channel,
+        speed: &DataSpeed,
+    ) -> ParseResult<'a, Self> {
+        match channel {
+            Channel::LongRangeA | Channel::LongRangeB => Self::lr_deserialize(data),
+            _ => Self::mesh_deserialize(data, channel, speed),
+        }
     }
 }
 

@@ -109,6 +109,7 @@ impl DeserializeFrame for Data {
         if data.is_empty() {
             return Err(ParseError::Empty);
         }
+
         // Timestamp hardcoded to 0, ignore it instead of validating in case it ever gets populated
         let (_, data) = data.split_at_checked(2).ok_or(ParseError::Incomplete)?;
 
@@ -116,6 +117,7 @@ impl DeserializeFrame for Data {
 
         let data_speed =
             DataSpeed::try_from(channel_speed & 0x1F).map_err(|_| ParseError::Invalid)?;
+
         let channel = Channel::try_from(channel_speed >> 5).map_err(|_| ParseError::Invalid)?;
 
         if channel.is_long_range() != data_speed.is_long_range() {

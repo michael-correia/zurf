@@ -45,6 +45,28 @@ pub struct Hop {
     pub rssi: Rssi,
 }
 
+pub fn noise_floor_from_byte(byte: u8) -> Rssi {
+    let signed_byte = byte.cast_signed();
+    if (-120..=30).contains(&signed_byte) {
+        Ok(signed_byte)
+    } else {
+        Err(RssiError::NotAvailable)
+    }
+}
+
+pub fn lr_rssi_from_byte(byte: u8) -> Rssi {
+    noise_floor_from_byte(byte)
+}
+
+pub fn tx_power_from_byte(byte: u8) -> Rssi {
+    let signed_byte = byte.cast_signed();
+    if (-100..=35).contains(&signed_byte) {
+        Ok(signed_byte)
+    } else {
+        Err(RssiError::NotAvailable)
+    }
+}
+
 impl Hop {
     pub fn rssi_from_byte(byte: u8) -> Rssi {
         match byte {
@@ -288,5 +310,41 @@ mod tests {
 
         queue.push("one", 3);
         assert_eq!(queue.get(&"one"), Some(&3));
+    }
+
+    #[test]
+    fn test_noise_floor_from_byte() {
+        // Valid bounds [-120, 30]
+        assert_eq!(noise_floor_from_byte(0).unwrap(), 0);
+        assert_eq!(noise_floor_from_byte(30).unwrap(), 30);
+        assert_eq!(noise_floor_from_byte(-120i8 as u8).unwrap(), -120);
+
+        // Invalid bounds
+        assert_eq!(noise_floor_from_byte(31), Err(RssiError::NotAvailable));
+        assert_eq!(
+            noise_floor_from_byte(-121i8 as u8),
+            Err(RssiError::NotAvailable)
+        );
+    }
+
+    #[test]
+    fn test_lr_rssi_from_byte() {
+        assert_eq!(lr_rssi_from_byte(0).unwrap(), 0);
+        assert_eq!(lr_rssi_from_byte(31), Err(RssiError::NotAvailable));
+    }
+
+    #[test]
+    fn test_tx_power_from_byte() {
+        // Valid bounds [-100, 35]
+        assert_eq!(tx_power_from_byte(0).unwrap(), 0);
+        assert_eq!(tx_power_from_byte(35).unwrap(), 35);
+        assert_eq!(tx_power_from_byte(-100i8 as u8).unwrap(), -100);
+
+        // Invalid bounds
+        assert_eq!(tx_power_from_byte(36), Err(RssiError::NotAvailable));
+        assert_eq!(
+            tx_power_from_byte(-101i8 as u8),
+            Err(RssiError::NotAvailable)
+        );
     }
 }
