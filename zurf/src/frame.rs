@@ -183,7 +183,7 @@ pub struct Frame {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameParseMetadata {
+struct FrameParseMetadata {
     pub data_speed: Option<DataSpeed>,
     pub channel: Option<Channel>,
     pub rssi: Rssi,
@@ -226,7 +226,7 @@ impl Frame {
     }
 }
 
-pub trait DeserializeFrame: Sized {
+trait DeserializeFrame: Sized {
     fn deserialize<'a>(data: &'a [u8]) -> ParseResult<'a, (Self, FrameParseMetadata)>;
 }
 

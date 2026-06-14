@@ -19,7 +19,7 @@ pub type Aes128Ccm = Ccm<Aes128, U8, U13>;
 // ==========================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PersonalizationString(pub [u8; 32]);
+pub struct PersonalizationString([u8; 32]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkKeyExpansion {
@@ -97,21 +97,13 @@ impl PartialEntropyInput {
         nonce_prk.update(&self.entropy);
         Self::derive_entropy(nonce_prk.finalize().into_bytes().0)
     }
-
-    pub fn into_multicast_mei(self) -> DerivedEntropy {
-        const NONCE: [u8; 16] = [0x26u8; 16];
-        let mut nonce_prk = Cmac::<Aes128>::new_from_slice(&NONCE).unwrap();
-
-        nonce_prk.update(&self.entropy);
-        Self::derive_entropy(nonce_prk.finalize().into_bytes().0)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DerivedEntropy(pub [u8; 32]);
+pub struct DerivedEntropy([u8; 32]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DrbgCount([u8; 16]);
+struct DrbgCount([u8; 16]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CtrDrbg {
@@ -143,7 +135,7 @@ impl CtrDrbg {
         self.value.0 = std::array::from_fn(|i| seed_material[i + 16] ^ temp[i + 16]);
     }
 
-    pub fn new(entropy: DerivedEntropy, personalization_string: &PersonalizationString) -> Self {
+    pub fn new(entropy: &DerivedEntropy, personalization_string: &PersonalizationString) -> Self {
         let seed_material: [u8; 32] =
             std::array::from_fn(|i| entropy.0[i] ^ personalization_string.0[i]);
 
@@ -169,12 +161,13 @@ impl CtrDrbg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpanState {
-    pub drbg: CtrDrbg,
+    drbg: CtrDrbg,
     pub security_class: SecurityClass,
-    pub original_sender: NodeId,
-    pub original_sender_sequence_number: u8,
-    pub original_receiver_sequence_number: u8,
-    pub original_receiver: NodeId,
+    original_sender: NodeId,
+    original_sender_sequence_number: u8,
+    original_receiver_sequence_number: u8,
+    original_receiver: NodeId,
+    laggy_sequence_number: u8,
 }
 
 impl SpanState {
@@ -182,7 +175,7 @@ impl SpanState {
         &mut self,
         nk_expansion: &NetworkKeyExpansion,
         sequence_number: u8,
-        aad: AdditionalAuthenticatedData,
+        aad: &AdditionalAuthenticatedData,
         ciphertext_with_tag: &[u8],
     ) -> Result<Vec<u8>, ccm::aead::Error> {
         let mut drbg = self.drbg.clone();
@@ -195,40 +188,53 @@ impl SpanState {
             sequence_number.wrapping_sub(self.original_receiver_sequence_number)
         };
 
+        let laggy_diff = self
+            .original_sender_sequence_number
+            .wrapping_add(self.original_receiver_sequence_number)
+            .wrapping_sub(self.laggy_sequence_number);
+
+        let diff = (diff as u16) + (laggy_diff as u16);
+
         if diff == 0 || diff > 25 {
             return Err(ccm::aead::Error);
         }
-        for _ in 0..diff - 1 {
-            drbg.generate::<13>();
-        }
-        let nonce: [u8; 13] = drbg.generate();
 
-        // 2. Decrypt AES-128-CCM (8-byte tag, 13-byte nonce) using CCM key
-        let cipher = Aes128Ccm::new(&nk_expansion.ccm_key.0.into());
-        let aad_bytes = aad.into_be_bytes();
-        let payload = Payload {
-            msg: ciphertext_with_tag,
-            aad: &aad_bytes,
-        };
-        let res = cipher.decrypt(&nonce.into(), payload);
-        if res.is_ok() {
-            self.drbg = drbg;
-            if original_sender {
-                self.original_sender_sequence_number = sequence_number;
-            } else {
-                self.original_receiver_sequence_number = sequence_number
+        let mut iterations: u16;
+        //drbg.generate::<13>();
+        for i in 0..diff {
+            iterations = i;
+            let nonce: [u8; 13] = drbg.generate();
+
+            let cipher = Aes128Ccm::new(&nk_expansion.ccm_key.0.into());
+            let aad_bytes = aad.into_be_bytes();
+            let payload = Payload {
+                msg: ciphertext_with_tag,
+                aad: &aad_bytes,
+            };
+            let res = cipher.decrypt(&nonce.into(), payload);
+            if res.is_ok() {
+                for _ in 0..iterations.saturating_sub(15) {
+                    self.drbg.generate::<13>();
+                    self.laggy_sequence_number = self.laggy_sequence_number.wrapping_add(1);
+                }
+                if original_sender {
+                    self.original_sender_sequence_number = sequence_number;
+                } else {
+                    self.original_receiver_sequence_number = sequence_number
+                }
+                return res;
             }
         }
-        res
+        Err(ccm::aead::Error)
     }
 
     pub fn new(
-        entropy: DerivedEntropy,
+        entropy: &DerivedEntropy,
         nk_expansion: &NetworkKeyExpansion,
         security_class: SecurityClass,
         sender_sequence_number: u8,
         receiver_sequence_number: u8,
-        aad: AdditionalAuthenticatedData,
+        aad: &AdditionalAuthenticatedData,
         ciphertext_with_tag: &[u8],
     ) -> Option<(Self, Vec<u8>)> {
         let mut state = Self {
@@ -243,6 +249,8 @@ impl SpanState {
                 }
             },
             original_receiver_sequence_number: receiver_sequence_number,
+            laggy_sequence_number: receiver_sequence_number
+                .wrapping_add(sender_sequence_number.wrapping_sub(1)),
         };
         let output = state.decrypt_s2_frame(
             nk_expansion,
@@ -255,12 +263,77 @@ impl SpanState {
             Err(_) => None,
         }
     }
+
+    #[cfg(test)]
+    pub fn get_drbg(&self) -> &CtrDrbg {
+        &self.drbg
+    }
+
+    #[cfg(test)]
+    pub fn get_original_sender_sequence_number(&self) -> u8 {
+        self.original_sender_sequence_number
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MpanState {
-    pub inner_state: [u8; 16],
+    inner_state: [u8; 16],
     pub security_class: SecurityClass,
+}
+
+impl std::default::Default for MpanState {
+    fn default() -> Self {
+        Self {
+            inner_state: [0; 16],
+            security_class: SecurityClass::Unauthenticated,
+        }
+    }
+}
+
+impl MpanState {
+    pub fn new(inner_state: [u8; 16], security_class: SecurityClass) -> Self {
+        Self {
+            inner_state,
+            security_class,
+        }
+    }
+
+    pub fn decrypt_s2_frame(
+        &mut self,
+        nk_expansion: &NetworkKeyExpansion,
+        aad: AdditionalAuthenticatedData,
+        ciphertext_with_tag: &[u8],
+    ) -> Result<Vec<u8>, ccm::aead::Error> {
+        let cipher_ecb = Aes128Enc::new_from_slice(&nk_expansion.mpan_key.0).unwrap();
+        let mut result: Result<Vec<u8>, ccm::aead::Error> = Err(ccm::aead::Error);
+        let cipher_ccm = Aes128Ccm::new(&nk_expansion.ccm_key.0.into());
+        let aad_bytes = aad.into_be_bytes();
+        let mut temp_inner_state = self.inner_state;
+
+        for i in 0..255 {
+            let mut block = Block::from(temp_inner_state);
+            temp_inner_state = u128::from_be_bytes(temp_inner_state)
+                .wrapping_add(1)
+                .to_be_bytes();
+            cipher_ecb.encrypt_block(&mut block);
+            let nonce: [u8; 13] = block.0[..13].try_into().unwrap();
+
+            let payload = Payload {
+                msg: ciphertext_with_tag,
+                aad: &aad_bytes,
+            };
+            result = cipher_ccm.decrypt(&nonce.into(), payload);
+            if result.is_ok() {
+                if i >= 15 {
+                    self.inner_state = u128::from_be_bytes(self.inner_state)
+                        .wrapping_add(i - 15)
+                        .to_be_bytes();
+                }
+                break;
+            }
+        }
+        result
+    }
 }
 
 // ==========================================
@@ -283,7 +356,7 @@ pub struct AdditionalAuthenticatedData {
 }
 
 impl AdditionalAuthenticatedData {
-    pub fn into_be_bytes(self) -> Vec<u8> {
+    pub fn into_be_bytes(&self) -> Vec<u8> {
         let mut data = Vec::<u8>::with_capacity(10 + self.unencrypted.len());
         let dest_val = match self.destination {
             Destination::Singlecast(node_id) => node_id.0,
@@ -301,7 +374,7 @@ impl AdditionalAuthenticatedData {
         }
         data.extend(u32::to_be_bytes(self.home.0));
         data.extend(u16::to_be_bytes(self.nsdu_length));
-        data.extend(self.unencrypted);
+        data.extend_from_slice(self.unencrypted.as_slice());
         data
     }
 }
@@ -309,19 +382,126 @@ impl AdditionalAuthenticatedData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptedEncapsulation {
     pub sequence_number: u8,
-    pub senders_entropy: Option<PartialEntropyInput>,
-    pub multicast_group: Option<u8>,
-    pub multicast_out_of_sync: bool,
+    pub extensions: Option<Vec<Extension>>,
+    pub has_encrypted_extensions: bool,
     pub aad: AdditionalAuthenticatedData,
-    pub payload: Vec<u8>,
+}
+
+impl EncryptedEncapsulation {
+    pub fn get_senders_entropy(&self) -> Option<&PartialEntropyInput> {
+        if let Some(extensions) = &self.extensions {
+            extensions.iter().find_map(|ext| match ext {
+                Extension::SendersEntropy(ent) => Some(ent),
+                _ => None,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn get_multicast_group_id(&self) -> Option<u8> {
+        if let Some(extensions) = &self.extensions {
+            extensions.iter().find_map(|ext| match ext {
+                Extension::MulticastGroupId(id) => Some(*id),
+                _ => None,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn get_mpan_state(&self) -> Option<(u8, &[u8; 16])> {
+        if let Some(extensions) = &self.extensions {
+            extensions.iter().find_map(|ext| match ext {
+                Extension::MpanState(group_id, mpan_state) => Some((*group_id, mpan_state)),
+                _ => None,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn is_multicast_out_of_sync(&self) -> bool {
+        if let Some(extensions) = &self.extensions {
+            extensions
+                .iter()
+                .any(|ext| matches!(ext, Extension::MulticastOutOfSync))
+        } else {
+            false
+        }
+    }
+
+    pub fn extract_excrypted_extensions<'a>(&mut self, plaintext_payload: &'a [u8]) -> &'a [u8] {
+        if let Some((mut decrypted_extensions, remaining_data)) =
+            parse_decrypted_extensions(plaintext_payload)
+        {
+            self.extensions
+                .get_or_insert_with(Vec::new)
+                .append(&mut decrypted_extensions);
+            remaining_data
+        } else {
+            plaintext_payload
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Extension {
+    SendersEntropy(PartialEntropyInput),
+    MpanState(u8, [u8; 16]),
+    MulticastGroupId(u8),
+    MulticastOutOfSync,
+}
+
+pub fn parse_decrypted_extensions(input: &[u8]) -> Option<(Vec<Extension>, &[u8])> {
+    let mut extensions: Vec<Extension> = vec![];
+    let mut data = input;
+    loop {
+        let (length, remaining_data) = data.split_first()?;
+        if (*length < 2) || (data.len() < (*length as usize)) {
+            break;
+        }
+        let length = *length as usize;
+        data = remaining_data;
+
+        let (second_byte, remaining_data) = data.split_first()?;
+        data = remaining_data;
+        let ext_type = *second_byte & 0b0001_1111;
+        let more_to_follow = (*second_byte & 0b1000_0000) != 0;
+        let (value, remaining_data) = data.split_at(length - 2);
+        data = remaining_data;
+
+        match ext_type {
+            1 if let Ok(bytes) = value.try_into() => {
+                extensions.push(Extension::SendersEntropy(PartialEntropyInput::new(bytes)));
+            }
+            2 if value.len() == 17 => {
+                let group_id = value[0];
+                if let Ok(bytes) = value[1..17].try_into() {
+                    extensions.push(Extension::MpanState(group_id, bytes));
+                }
+            }
+            3 if !value.is_empty() => {
+                extensions.push(Extension::MulticastGroupId(value[0]));
+            }
+            4 if value.is_empty() => {
+                extensions.push(Extension::MulticastOutOfSync);
+            }
+            _ => {}
+        }
+        if !more_to_follow {
+            break;
+        }
+    }
+    Some((extensions, data))
 }
 
 impl EncryptedEncapsulation {
     pub fn deserialize<'a>(
         data: &'a [u8],
-        sender: &NodeId,
+        sender: NodeId,
         receiver: &crate::types::Destination,
-        home_id: &crate::types::HomeId,
+        home_id: crate::types::HomeId,
     ) -> Option<(Self, &'a [u8])> {
         let nsdu_length = data.len() as u16;
         let (header, data) = data.split_at_checked(2)?;
@@ -335,48 +515,31 @@ impl EncryptedEncapsulation {
         let (sequence_number, data) = data.split_first()?;
         let sequence_number = *sequence_number;
 
-        let (has_extension, data) = data.split_first()?;
-        let has_extension = (*has_extension & 0b0000_0001) != 0;
+        let (has_extension, mut data) = data.split_first()?;
+        let (has_extension, has_encrypted_extensions) = (
+            ((*has_extension & 0b0000_0001) != 0),
+            ((*has_extension & 0b0000_0010) != 0),
+        );
 
-        let mut senders_entropy: Option<PartialEntropyInput> = None;
-        let mut multicast_group: Option<u8> = None;
-        let mut multicast_out_of_sync: bool = false;
-
-        let mut data = data;
-        let mut more_to_follow = has_extension;
-        while more_to_follow {
-            let (length, remaining_data) = data.split_first()?;
-            if (*length < 2) || (data.len() < (*length as usize)) {
-                break;
-            }
-            let length = *length as usize;
-            data = remaining_data;
-
-            let (second_byte, remaining_data) = data.split_first()?;
-            data = remaining_data;
-            let ext_type = *second_byte & 0b0001_1111;
-            more_to_follow = (*second_byte & 0b1000_0000) != 0;
-            let (value, remaining_data) = data.split_at(length - 2);
-            data = remaining_data;
-
-            match ext_type {
-                1 if let Ok(bytes) = value.try_into() => {
-                    senders_entropy = Some(PartialEntropyInput::new(bytes));
-                }
-                3 if !value.is_empty() => {
-                    multicast_group = Some(value[0]);
-                }
-                4 if value.is_empty() => {
-                    multicast_out_of_sync = true;
-                }
-                _ => {}
-            }
+        if has_encrypted_extensions {
+            print!("\n\n\nHAS ENCRYPTED EXTENSIONS!\n\n\n")
         }
 
-        let aad_destination = if let Some(group) = multicast_group {
-            Destination::Multicast(group)
-        } else if let crate::types::Destination::Single(node_id) = receiver {
+        let mut extensions: Option<Vec<Extension>> = None;
+        if has_extension {
+            let (unencrypted_extensions, remaining_data) = parse_decrypted_extensions(data)?;
+            extensions = Some(unencrypted_extensions);
+            data = remaining_data;
+        }
+
+        let aad_destination = if let crate::types::Destination::Single(node_id) = receiver {
             Destination::Singlecast(*node_id)
+        } else if let Some(unencrypted_extensions) = extensions.as_ref()
+            && let Some(Extension::MulticastGroupId(group)) = unencrypted_extensions
+                .iter()
+                .find(|ext| matches!(ext, Extension::MulticastGroupId(_)))
+        {
+            Destination::Multicast(*group)
         } else {
             return None;
         };
@@ -384,17 +547,15 @@ impl EncryptedEncapsulation {
         Some((
             Self {
                 sequence_number,
-                senders_entropy,
-                multicast_group,
-                multicast_out_of_sync,
+                extensions,
+                has_encrypted_extensions,
                 aad: AdditionalAuthenticatedData {
-                    sender: *sender,
+                    sender,
                     destination: aad_destination,
-                    home: *home_id,
+                    home: home_id,
                     nsdu_length,
                     unencrypted: command_payload[..command_payload.len() - data.len()].to_vec(),
                 },
-                payload: command_payload.to_vec(),
             },
             data,
         ))
@@ -432,75 +593,6 @@ impl NonceReport {
             entropy,
         })
     }
-}
-
-// ==========================================
-// Decryption Functions
-// ==========================================
-
-/// Decrypt a singlecast S2 frame using a specific DRBG instance.
-///
-/// The decryption key is the CCM key (T1 from network key expansion).
-pub fn decrypt_s2_with_drbg(
-    nk_expansion: &NetworkKeyExpansion,
-    drbg: &mut CtrDrbg,
-    aad: AdditionalAuthenticatedData,
-    ciphertext_with_tag: &[u8],
-) -> Result<Vec<u8>, ccm::aead::Error> {
-    // 1. Generate the 13-byte Nonce
-    let nonce: [u8; 13] = drbg.generate();
-
-    // 2. Decrypt AES-128-CCM (8-byte tag, 13-byte nonce) using CCM key
-    let cipher = Aes128Ccm::new(&nk_expansion.ccm_key.0.into());
-    let aad_bytes = aad.into_be_bytes();
-    let payload = Payload {
-        msg: ciphertext_with_tag,
-        aad: &aad_bytes,
-    };
-    cipher.decrypt(&nonce.into(), payload)
-}
-
-/// Decrypt a singlecast S2 frame.
-///
-/// The nonce is generated via CTR_DRBG(MEI, personalization_string).
-/// The decryption key is the CCM key (T1 from network key expansion).
-pub fn decrypt_s2_frame(
-    nk_expansion: &NetworkKeyExpansion,
-    entropy: DerivedEntropy,
-    aad: AdditionalAuthenticatedData,
-    ciphertext_with_tag: &[u8],
-) -> Result<Vec<u8>, ccm::aead::Error> {
-    // Mix the Entropy (MEI)
-    let mut drbg = CtrDrbg::new(entropy, &nk_expansion.personalization_string);
-    decrypt_s2_with_drbg(nk_expansion, &mut drbg, aad, ciphertext_with_tag)
-}
-
-/// Decrypt a multicast S2 frame.
-///
-/// Multicast uses a fundamentally different nonce mechanism than singlecast:
-///   - Nonce = AES-128-ECB(mpan_inner_state, mpan_key)[:13]
-///   - Decryption key = CCM key (T1), NOT the MPAN key
-///   - After each use, mpan_inner_state is incremented (big-endian +1)
-pub fn decrypt_s2_multicast_frame(
-    nk_expansion: &NetworkKeyExpansion,
-    mpan_inner_state: [u8; 16],
-    aad: AdditionalAuthenticatedData,
-    ciphertext_with_tag: &[u8],
-) -> Result<Vec<u8>, ccm::aead::Error> {
-    // 2. Generate nonce: AES-128-ECB(mpan_inner_state, mpan_key)[:13]
-    let cipher_ecb = Aes128Enc::new_from_slice(&nk_expansion.mpan_key.0).unwrap();
-    let mut block = Block::from(mpan_inner_state);
-    cipher_ecb.encrypt_block(&mut block);
-    let nonce: [u8; 13] = block.0[..13].try_into().unwrap();
-
-    // 3. Decrypt AES-128-CCM using CCM key (enc_key), NOT mpan_key
-    let cipher_ccm = Aes128Ccm::new(&nk_expansion.ccm_key.0.into());
-    let aad_bytes = aad.into_be_bytes();
-    let payload = Payload {
-        msg: ciphertext_with_tag,
-        aad: &aad_bytes,
-    };
-    cipher_ccm.decrypt(&nonce.into(), payload)
 }
 
 // ==========================================
@@ -557,7 +649,7 @@ mod tests {
         let entropy = DerivedEntropy(mei_bytes);
         let pers_string = PersonalizationString(pers_bytes);
 
-        let drbg = CtrDrbg::new(entropy, &pers_string);
+        let drbg = CtrDrbg::new(&entropy, &pers_string);
 
         let expected_key = hex_literal::hex!("f5b26010c35a7f2c205ef714e29ff3c0");
         let expected_v = hex_literal::hex!("ffa383177209079a0159e20ef08016a7");
@@ -574,7 +666,7 @@ mod tests {
             hex_literal::hex!("0a1ca977daafc6e4d1c3880cc8de0300dd1af08675c6fcf6a58c2e6aa110496f");
 
         let mut drbg = CtrDrbg::new(
-            DerivedEntropy(mei_bytes),
+            &DerivedEntropy(mei_bytes),
             &PersonalizationString(pers_bytes),
         );
 
@@ -683,7 +775,7 @@ mod tests {
             let entropy = DerivedEntropy(entropy_bytes);
             let personal = PersonalizationString(personal_bytes);
 
-            let mut drbg = CtrDrbg::new(entropy, &personal);
+            let mut drbg = CtrDrbg::new(&entropy, &personal);
 
             let _first_call: [u8; 64] = drbg.generate();
             let second_call: [u8; 64] = drbg.generate();
@@ -694,40 +786,6 @@ mod tests {
                 i
             );
         }
-    }
-
-    #[test]
-    fn test_full_s2_decryption() {
-        let permanent_network_key = Key(hex_literal::hex!("e0ff431eb430fa03c85f519adc3aa518"));
-        let nk_expansion = NetworkKeyExpansion::new(&permanent_network_key);
-        let public_entropy =
-            PartialEntropyInput::new(hex_literal::hex!("2fb9b45a6d0a12b789cbc1ce4f2e0b51"));
-        let senders_entropy =
-            PartialEntropyInput::new(hex_literal::hex!("634f03d2407df9d6b21195ce6887eb71"));
-
-        let aad = AdditionalAuthenticatedData {
-            sender: NodeId(2),
-            destination: Destination::Singlecast(NodeId(1)),
-            home: HomeId(0xfdd09bc7),
-            nsdu_length: 0x002B,
-            unencrypted: hex_literal::hex!("7d011241634f03d2407df9d6b21195ce6887eb71").to_vec(),
-        };
-
-        let ciphertext = hex_literal::hex!("931648dc814111d4c4dcbe47a942dbac586a35e02a");
-        let expected_plaintext = hex_literal::hex!("6c0136097105820000ff080100");
-
-        let plaintext = decrypt_s2_frame(
-            &nk_expansion,
-            public_entropy.with_senders_entropy(&senders_entropy),
-            aad,
-            &ciphertext,
-        )
-        .expect("AES-CCM Decryption Failed (Authentication Tag Mismatch)");
-
-        assert_eq!(
-            plaintext, expected_plaintext,
-            "Decrypted plaintext did not match expected!"
-        );
     }
 
     #[test]
@@ -747,9 +805,13 @@ mod tests {
         let ciphertext = hex_literal::hex!("eb8b36297656ac6e97d6c1eb1fec24d0654eebbb4648fed4");
         let expected_plaintext = hex_literal::hex!("48656c6c6f206d756c74696361737421");
 
-        let plaintext =
-            decrypt_s2_multicast_frame(&nk_expansion, mpan_inner_state, aad, &ciphertext)
-                .expect("AES-CCM Decryption Failed (Authentication Tag Mismatch)");
+        let mut mpan = MpanState {
+            inner_state: mpan_inner_state,
+            security_class: SecurityClass::Unauthenticated,
+        };
+        let plaintext = mpan
+            .decrypt_s2_frame(&nk_expansion, aad, &ciphertext)
+            .expect("AES-CCM Decryption Failed (Authentication Tag Mismatch)");
 
         assert_eq!(
             plaintext, expected_plaintext,
@@ -818,5 +880,85 @@ mod tests {
                 0x02, 0x03, 0x12, 0x34, 0x56, 0x78, 0x00, 0x2B, 0xAA, 0xBB, 0xCC
             ]
         );
+    }
+
+    #[test]
+    fn test_my_decryption() {
+        let pnk_mesh_auth = Key(hex_literal::hex!("99a46f6a6e2e0417679d894faee3c50d"));
+        let pnk_mesh_ac = Key(hex_literal::hex!("e0ff431eb430fa03c85f519adc3aa518"));
+        let pnk_unauth = Key(hex_literal::hex!("a2e2828a4d254e1d92f221a6cf7e6b3b"));
+
+        let base_state_val =
+            u128::from_be_bytes(hex_literal::hex!("9f3f3144efc4ae4dc87730f863bed098"));
+
+        let aad = AdditionalAuthenticatedData {
+            sender: NodeId(1),
+            destination: Destination::Multicast(1),
+            home: HomeId(0xfdd09bc7),
+            nsdu_length: 0x0013,
+            unencrypted: hex_literal::hex!("dd01034301").to_vec(),
+        };
+
+        let ciphertext = hex_literal::hex!("4db76f7339080704606ebfd7");
+
+        for (name, pnk) in [
+            ("MeshAuth", pnk_mesh_auth),
+            ("MeshAc", pnk_mesh_ac),
+            ("Unauth", pnk_unauth),
+        ] {
+            let nk_expansion = NetworkKeyExpansion::new(&pnk);
+            for offset in -10..=10 {
+                let mpan_inner_state = (base_state_val.wrapping_add(offset as u128)).to_be_bytes();
+                let mut mpan = MpanState {
+                    inner_state: mpan_inner_state,
+                    security_class: SecurityClass::Unauthenticated,
+                };
+                if let Ok(plaintext) =
+                    mpan.decrypt_s2_frame(&nk_expansion, aad.clone(), &ciphertext)
+                {
+                    println!(
+                        "SUCCESS for 0xDD! Key: {}, Offset: {}, Plaintext: {}",
+                        name,
+                        offset,
+                        hex::encode(plaintext)
+                    );
+                }
+            }
+        }
+
+        // Test 0xDF frame as well
+        let aad_df = AdditionalAuthenticatedData {
+            sender: NodeId(1),
+            destination: Destination::Multicast(1),
+            home: HomeId(0xfdd09bc7),
+            nsdu_length: 0x0013,
+            unencrypted: hex_literal::hex!("df01034301").to_vec(),
+        };
+        let ciphertext_df = hex_literal::hex!("e9412418e0b9f3eaab1258f6");
+
+        for (name, pnk) in [
+            ("MeshAuth", pnk_mesh_auth),
+            ("MeshAc", pnk_mesh_ac),
+            ("Unauth", pnk_unauth),
+        ] {
+            let nk_expansion = NetworkKeyExpansion::new(&pnk);
+            for offset in -10..=10 {
+                let mpan_inner_state = (base_state_val.wrapping_add(offset as u128)).to_be_bytes();
+                let mut mpan = MpanState {
+                    inner_state: mpan_inner_state,
+                    security_class: SecurityClass::Unauthenticated,
+                };
+                if let Ok(plaintext) =
+                    mpan.decrypt_s2_frame(&nk_expansion, aad_df.clone(), &ciphertext_df)
+                {
+                    println!(
+                        "SUCCESS for 0xDF! Key: {}, Offset: {}, Plaintext: {}",
+                        name,
+                        offset,
+                        hex::encode(plaintext)
+                    );
+                }
+            }
+        }
     }
 }

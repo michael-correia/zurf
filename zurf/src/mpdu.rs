@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 use zurf_enum_derive::TryFromU8;
 
 use crate::{
@@ -83,9 +85,9 @@ pub enum EncapsulationCommand {
 impl EncapsulationCommand {
     pub fn parse(
         data: &[u8],
-        sender: &NodeId,
+        sender: NodeId,
         receiver: &crate::types::Destination,
-        home_id: &crate::types::HomeId,
+        home_id: crate::types::HomeId,
     ) -> Self {
         match data.get(..2) {
             Some(&[0x9F, 0x02]) => NonceReport::deserialize(data)
@@ -559,9 +561,9 @@ impl Data {
                 .to_vec();
             mpdu.payload = Some(EncapsulationCommand::parse(
                 &payload,
-                &mpdu.source_node_id,
+                mpdu.source_node_id,
                 &mpdu.destination,
-                &mpdu.home_id,
+                mpdu.home_id,
             ));
         }
 
@@ -644,9 +646,9 @@ impl Data {
             mpdu.payload = Some(EncapsulationCommand::parse(
                 data.get(index..index + mdsu_size)
                     .ok_or(ParseError::Incomplete)?,
-                &mpdu.source_node_id,
+                mpdu.source_node_id,
                 &mpdu.destination,
-                &mpdu.home_id,
+                mpdu.home_id,
             ));
             index += mdsu_size;
         }

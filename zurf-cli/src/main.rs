@@ -2,7 +2,11 @@
 
 mod transport;
 mod zniffer;
-use zurf::{keys, security::Key, types::HomeId};
+use zurf::{
+    keys::{self, KeyStore},
+    security::Key,
+    types::HomeId,
+};
 
 struct Args {
     port: String,
@@ -165,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let transport = transport::IoUringUART::new(&args.port, args.region)?;
 
-    let mut keystore = keys::KeyStore::default();
+    let mut keystore = keys::LruKeyStore::default();
     if let Some(home_id) = args.home_id {
         keystore.insert_keyring(home_id, keyring);
     }

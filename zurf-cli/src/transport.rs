@@ -75,6 +75,21 @@ impl IoUringUART {
 
             tty.c_cc[libc::VTIME] = 1;
             tty.c_cc[libc::VMIN] = 1;
+            // Enable receiver and set local mode (ignore modem status lines)
+            tty.c_cflag |= libc::CLOCAL | libc::CREAD;
+
+            // Set 8N1 (8 data bits, no parity, 1 stop bit)
+            tty.c_cflag &= !libc::CSIZE;
+            tty.c_cflag |= libc::CS8;
+            tty.c_cflag &= !libc::PARENB;
+            tty.c_cflag &= !libc::CSTOPB;
+
+            // Disable hardware flow control
+            tty.c_cflag &= !libc::CRTSCTS;
+
+            // Raw output (disable post-processing)
+            tty.c_oflag &= !libc::OPOST;
+
             if libc::tcsetattr(fd, libc::TCSANOW, &tty) != 0 {
                 return Err(std::io::Error::last_os_error());
             }

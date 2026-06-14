@@ -5,8 +5,8 @@ use zurf::frame::Frame;
 use zurf::parser::Parser;
 
 pub struct Zniffer {
-    pub parser: Parser,
-    pub transport: IoUringUART,
+    parser: Parser,
+    transport: IoUringUART,
 }
 
 impl Zniffer {
