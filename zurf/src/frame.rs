@@ -7,8 +7,8 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BeamStart {
-    pub node_id: NodeId,
-    pub home_id_hash: u8,
+    pub node: NodeId,
+    pub home_hash: u8,
 }
 
 impl DeserializeFrame for BeamStart {
@@ -33,13 +33,13 @@ impl DeserializeFrame for BeamStart {
             return Err(ParseError::Invalid);
         }
 
-        let node_id = *data.get(index).ok_or(ParseError::Incomplete)? as u16;
+        let node = *data.get(index).ok_or(ParseError::Incomplete)? as u16;
         index += 1;
 
-        let node_id = if data_speed.is_long_range() {
-            NodeId(node_id + 255)
+        let node = if data_speed.is_long_range() {
+            NodeId(node + 255)
         } else {
-            NodeId(node_id)
+            NodeId(node)
         };
 
         let marker = *data.get(index).ok_or(ParseError::Incomplete)?;
@@ -48,15 +48,12 @@ impl DeserializeFrame for BeamStart {
             return Err(ParseError::Invalid);
         }
 
-        let home_id_hash = *data.get(index).ok_or(ParseError::Incomplete)?;
+        let home_hash = *data.get(index).ok_or(ParseError::Incomplete)?;
         index += 1;
 
         Ok((
             (
-                Self {
-                    node_id,
-                    home_id_hash,
-                },
+                Self { node, home_hash },
                 FrameParseMetadata {
                     data_speed: Some(data_speed),
                     channel,
@@ -376,8 +373,8 @@ mod tests {
         let parsed = BeamStart::deserialize(&data);
         assert!(parsed.is_ok());
         let (beam, metadata) = parsed.unwrap().0;
-        assert_eq!(beam.node_id, NodeId(8));
-        assert_eq!(beam.home_id_hash, 0x2D);
+        assert_eq!(beam.node, NodeId(8));
+        assert_eq!(beam.home_hash, 0x2D);
         assert_eq!(metadata.data_speed, Some(DataSpeed::Mesh40k));
         assert_eq!(metadata.channel, Some(Channel::Mesh2));
         assert_eq!(metadata.rssi, Ok(47));
@@ -398,8 +395,8 @@ mod tests {
         let parsed = BeamStart::deserialize(&data);
         assert!(parsed.is_ok());
         let (beam, metadata) = parsed.unwrap().0;
-        assert_eq!(beam.node_id, NodeId(258));
-        assert_eq!(beam.home_id_hash, 0x2D);
+        assert_eq!(beam.node, NodeId(258));
+        assert_eq!(beam.home_hash, 0x2D);
         assert_eq!(metadata.data_speed, Some(DataSpeed::LongRange100k));
         assert_eq!(metadata.channel, Some(Channel::LongRangeA));
         assert_eq!(metadata.rssi, Ok(47));

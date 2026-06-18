@@ -54,10 +54,10 @@ pub enum ExplorerDirection {
 pub enum ExplorerPayload {
     Normal,
     InclusionInformation {
-        home_id: Option<HomeId>,
+        home: Option<HomeId>,
     },
     Search {
-        source_node_id: NodeId,
+        source_node: NodeId,
         frame_handle: u8,
         result_repeaters: Vec<NodeId>,
     },
@@ -70,6 +70,78 @@ pub enum CRCMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportServiceEncapsulation {
+    pub sender: NodeId,
+    pub destination: Destination,
+    pub home: HomeId,
+    pub session: u8,
+    pub datagram_size: usize,
+    pub datagram_offset: usize,
+    pub buffer: Vec<u8>,
+}
+
+impl TransportServiceEncapsulation {
+    pub fn deserialize(
+        data: &[u8],
+        sender: NodeId,
+        destination: &Destination,
+        home: HomeId,
+    ) -> Result<Self, ParseError> {
+        let (header, data) = data.split_at_checked(2).ok_or(ParseError::Incomplete)?;
+        let size_10_to_8 = header[1] & 0b0000_0111;
+        let cmd_byte = (header[1] & !0b0000_0111) >> 3;
+        let is_first_segment = match [header[0], cmd_byte] {
+            [0x55, 0x18] => true,
+            [0x55, 0x1C] => false,
+            _ => {
+                return Err(ParseError::Invalid);
+            }
+        };
+
+        let (size_7_to_0, data) = data.split_first().ok_or(ParseError::Incomplete)?;
+        // I think this is only useful for first segment? But it's included every time
+        let datagram_size = (size_10_to_8 as usize) << 8 | *size_7_to_0 as usize;
+        let (metadata, mut data) = data.split_first().ok_or(ParseError::Incomplete)?;
+        let session = (*metadata & 0b1111_0000) >> 4;
+        let extensions = (*metadata & 0b0000_1000) != 0;
+        let datagram_offset = if is_first_segment {
+            0_usize
+        } else {
+            let offset_10_to_8 = (*metadata & 0b0000_0111) as usize;
+            let (offset_7_to_0, remaining) = data.split_first().ok_or(ParseError::Incomplete)?;
+            data = remaining;
+            (offset_10_to_8 << 8) | (*offset_7_to_0 as usize)
+        };
+        if extensions {
+            // let's just skip over them
+            let (extension_length, remaining) = data.split_first().ok_or(ParseError::Incomplete)?;
+            data = remaining;
+            let (_, remaining) = data
+                .split_at_checked(*extension_length as usize)
+                .ok_or(ParseError::Incomplete)?;
+            data = remaining;
+        }
+
+        // The rest is data up to the 2-byte FCS
+        let payload_len = data.len().checked_sub(2).ok_or(ParseError::Incomplete)?;
+        if datagram_size < payload_len {
+            return Err(ParseError::Invalid);
+        }
+        let buffer = data[..payload_len].to_vec();
+
+        Ok(Self {
+            sender,
+            destination: destination.clone(),
+            home,
+            session,
+            datagram_size,
+            datagram_offset,
+            buffer,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncapsulationCommand {
     SupervisionGet(Box<EncapsulationCommand>),
     Security2Encrypted(EncryptedEncapsulation, Vec<u8>),
@@ -79,28 +151,51 @@ pub enum EncapsulationCommand {
     MultiCommand(Vec<EncapsulationCommand>),
     //MultiChannel ?,
     S2Nonce(NonceReport),
+    TransportFirstSegment(TransportServiceEncapsulation),
+    TransportSegment(TransportServiceEncapsulation),
     Unencapsulated(Vec<u8>),
 }
 
 impl EncapsulationCommand {
     pub fn parse(
-        data: &[u8],
+        data: Vec<u8>,
         sender: NodeId,
         receiver: &crate::types::Destination,
-        home_id: crate::types::HomeId,
+        home: crate::types::HomeId,
     ) -> Self {
         match data.get(..2) {
-            Some(&[0x9F, 0x02]) => NonceReport::deserialize(data)
+            Some(&[0x9F, 0x02]) => NonceReport::deserialize(data.as_slice())
                 .map(EncapsulationCommand::S2Nonce)
-                .unwrap_or_else(|| EncapsulationCommand::Unencapsulated(data.to_vec())),
+                .unwrap_or_else(|| EncapsulationCommand::Unencapsulated(data)),
             Some(&[0x9F, 0x03]) => {
-                EncryptedEncapsulation::deserialize(data, sender, receiver, home_id)
+                EncryptedEncapsulation::deserialize(data.as_slice(), sender, receiver, home)
                     .map(|(encap, ciphertext)| {
                         EncapsulationCommand::Security2Encrypted(encap, ciphertext.to_vec())
                     })
-                    .unwrap_or_else(|| EncapsulationCommand::Unencapsulated(data.to_vec()))
+                    .unwrap_or_else(|| EncapsulationCommand::Unencapsulated(data))
             }
-            _ => EncapsulationCommand::Unencapsulated(data.to_vec()),
+            Some(&[0x55, cmd_byte]) => {
+                let cmd = cmd_byte >> 3;
+                if cmd == 0x18 || cmd == 0x1C {
+                    TransportServiceEncapsulation::deserialize(
+                        data.as_slice(),
+                        sender,
+                        receiver,
+                        home,
+                    )
+                    .map(|cache| {
+                        if cmd == 0x18 {
+                            EncapsulationCommand::TransportFirstSegment(cache)
+                        } else {
+                            EncapsulationCommand::TransportSegment(cache)
+                        }
+                    })
+                    .unwrap_or_else(|_| EncapsulationCommand::Unencapsulated(data))
+                } else {
+                    EncapsulationCommand::Unencapsulated(data)
+                }
+            }
+            _ => EncapsulationCommand::Unencapsulated(data),
         }
     }
 }
@@ -143,7 +238,7 @@ impl RoutedNetworkProtocolDataUnit {
                     .ok_or(ParseError::Incomplete)?
                     .iter()
                     .map(|&node| Hop {
-                        node_id: NodeId(node as u16),
+                        node: NodeId(node as u16),
                         rssi: Err(RssiError::NotAvailable),
                     })
                     .collect(),
@@ -243,29 +338,25 @@ impl ExploreNetworkProtocolDataUnit {
 
         let mut repeaters: Vec<NodeId> = Vec::with_capacity(4);
         for _ in 0..4 {
-            let node_id = *data.get(index).ok_or(ParseError::Incomplete)?;
+            let node = *data.get(index).ok_or(ParseError::Incomplete)?;
             index += 1;
-            if node_id != 0 {
-                repeaters.push(NodeId(node_id as u16));
+            if node != 0 {
+                repeaters.push(NodeId(node as u16));
             }
         }
 
         let command = match command {
             0 => ExplorerPayload::Normal,
             1 => {
-                let home_id = data.get(index..index + 4).ok_or(ParseError::Incomplete)?;
+                let home = data.get(index..index + 4).ok_or(ParseError::Incomplete)?;
                 index += 4;
 
-                let home_id = u32::from_be_bytes(home_id.try_into().unwrap());
-                let home_id = if home_id == 0 {
-                    None
-                } else {
-                    Some(HomeId(home_id))
-                };
-                ExplorerPayload::InclusionInformation { home_id }
+                let home = u32::from_be_bytes(home.try_into().unwrap());
+                let home = if home == 0 { None } else { Some(HomeId(home)) };
+                ExplorerPayload::InclusionInformation { home }
             }
             2 => {
-                let source_node_id = NodeId(*data.get(index).ok_or(ParseError::Incomplete)? as u16);
+                let source_node = NodeId(*data.get(index).ok_or(ParseError::Incomplete)? as u16);
                 index += 1;
                 let frame_handle = *data.get(index).ok_or(ParseError::Incomplete)?;
                 index += 1;
@@ -276,11 +367,11 @@ impl ExploreNetworkProtocolDataUnit {
                     .get(index..index + 4)
                     .ok_or(ParseError::Incomplete)?
                     .iter()
-                    .filter_map(|&node_id| {
-                        if node_id == 0 {
+                    .filter_map(|&node| {
+                        if node == 0 {
                             None
                         } else {
-                            Some(NodeId(node_id as u16))
+                            Some(NodeId(node as u16))
                         }
                     })
                     .collect();
@@ -288,7 +379,7 @@ impl ExploreNetworkProtocolDataUnit {
                 index += 4;
 
                 ExplorerPayload::Search {
-                    source_node_id,
+                    source_node,
                     frame_handle,
                     result_repeaters,
                 }
@@ -314,8 +405,8 @@ impl ExploreNetworkProtocolDataUnit {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Data {
-    pub home_id: HomeId,
-    pub source_node_id: NodeId,
+    pub home: HomeId,
+    pub source_node: NodeId,
     pub header_type: MpduHeaderType,
     pub ack_requested: bool,
     pub low_power: bool, // Used for Neighbor discovery. Historically used in inclusion which mandated close proximity
@@ -334,8 +425,8 @@ pub struct Data {
 impl std::default::Default for Data {
     fn default() -> Self {
         Self {
-            home_id: HomeId::default(),
-            source_node_id: NodeId::default(),
+            home: HomeId::default(),
+            source_node: NodeId::default(),
             header_type: MpduHeaderType::Singlecast,
             ack_requested: false,
             low_power: false,
@@ -390,11 +481,11 @@ impl Data {
         let mut mpdu = Self::default();
 
         let home_bytes = data.get(index..index + 4).ok_or(ParseError::Incomplete)?;
-        mpdu.home_id = HomeId(u32::from_be_bytes(home_bytes.try_into().unwrap()));
+        mpdu.home = HomeId(u32::from_be_bytes(home_bytes.try_into().unwrap()));
         index += 4;
 
-        let source_node_id = data.get(index).ok_or(ParseError::Incomplete)?;
-        mpdu.source_node_id = NodeId(*source_node_id as u16);
+        let source_node = data.get(index).ok_or(ParseError::Incomplete)?;
+        mpdu.source_node = NodeId(*source_node as u16);
         index += 1;
 
         let frame_control = data.get(index..index + 2).ok_or(ParseError::Incomplete)?;
@@ -501,12 +592,12 @@ impl Data {
             | MpduHeaderType::Explore
             | MpduHeaderType::Routed
             | MpduHeaderType::Ack => {
-                let dest_node_id = NodeId(*dest_byte as u16);
-                if mpdu.header_type == MpduHeaderType::Singlecast && dest_node_id.is_broadcast() {
+                let dest_node = NodeId(*dest_byte as u16);
+                if mpdu.header_type == MpduHeaderType::Singlecast && dest_node.is_broadcast() {
                     mpdu.header_type = MpduHeaderType::Broadcast;
                     mpdu.destination = Destination::Broadcast;
                 } else {
-                    mpdu.destination = Destination::Single(dest_node_id);
+                    mpdu.destination = Destination::Single(dest_node);
                 }
             }
             _ => {}
@@ -560,10 +651,10 @@ impl Data {
                 .ok_or(ParseError::Incomplete)?
                 .to_vec();
             mpdu.payload = Some(EncapsulationCommand::parse(
-                &payload,
-                mpdu.source_node_id,
+                payload.to_vec(),
+                mpdu.source_node,
                 &mpdu.destination,
-                mpdu.home_id,
+                mpdu.home,
             ));
         }
 
@@ -578,13 +669,13 @@ impl Data {
         let mut mpdu = Self::default();
 
         let home_bytes = data.get(index..index + 4).ok_or(ParseError::Incomplete)?;
-        mpdu.home_id = HomeId(u32::from_be_bytes(home_bytes.try_into().unwrap()));
+        mpdu.home = HomeId(u32::from_be_bytes(home_bytes.try_into().unwrap()));
         index += 4;
 
         let sender_and_receiver = data.get(index..index + 3).ok_or(ParseError::Incomplete)?;
         index += 3;
 
-        mpdu.source_node_id =
+        mpdu.source_node =
             NodeId(((sender_and_receiver[0] as u16) << 4) | ((sender_and_receiver[1] >> 4) as u16));
 
         let dest =
@@ -645,10 +736,11 @@ impl Data {
         if mdsu_size > 0 {
             mpdu.payload = Some(EncapsulationCommand::parse(
                 data.get(index..index + mdsu_size)
-                    .ok_or(ParseError::Incomplete)?,
-                mpdu.source_node_id,
+                    .ok_or(ParseError::Incomplete)?
+                    .to_vec(),
+                mpdu.source_node,
                 &mpdu.destination,
-                mpdu.home_id,
+                mpdu.home,
             ));
             index += mdsu_size;
         }

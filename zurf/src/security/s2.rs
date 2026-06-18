@@ -243,7 +243,7 @@ impl SpanState {
             original_sender_sequence_number: sender_sequence_number.wrapping_sub(1),
             original_sender: aad.sender,
             original_receiver: match aad.destination {
-                Destination::Singlecast(node_id) => node_id,
+                Destination::Singlecast(node) => node,
                 _ => {
                     return None;
                 }
@@ -359,8 +359,8 @@ impl AdditionalAuthenticatedData {
     pub fn into_be_bytes(&self) -> Vec<u8> {
         let mut data = Vec::<u8>::with_capacity(10 + self.unencrypted.len());
         let dest_val = match self.destination {
-            Destination::Singlecast(node_id) => node_id.0,
-            Destination::Multicast(group_id) => group_id as u16,
+            Destination::Singlecast(node) => node.0,
+            Destination::Multicast(group) => group as u16,
         };
         // Determine if we need to use the 2-byte AAD layout (CC:009F.01.00.11.00A)
         let use_2_bytes = self.sender.0 > 255 || dest_val > 255;
@@ -399,7 +399,7 @@ impl EncryptedEncapsulation {
         }
     }
 
-    pub fn get_multicast_group_id(&self) -> Option<u8> {
+    pub fn get_multicast_group(&self) -> Option<u8> {
         if let Some(extensions) = &self.extensions {
             extensions.iter().find_map(|ext| match ext {
                 Extension::MulticastGroupId(id) => Some(*id),
@@ -413,7 +413,7 @@ impl EncryptedEncapsulation {
     pub fn get_mpan_state(&self) -> Option<(u8, &[u8; 16])> {
         if let Some(extensions) = &self.extensions {
             extensions.iter().find_map(|ext| match ext {
-                Extension::MpanState(group_id, mpan_state) => Some((*group_id, mpan_state)),
+                Extension::MpanState(group, mpan_state) => Some((*group, mpan_state)),
                 _ => None,
             })
         } else {
@@ -476,9 +476,9 @@ pub fn parse_decrypted_extensions(input: &[u8]) -> Option<(Vec<Extension>, &[u8]
                 extensions.push(Extension::SendersEntropy(PartialEntropyInput::new(bytes)));
             }
             2 if value.len() == 17 => {
-                let group_id = value[0];
+                let group = value[0];
                 if let Ok(bytes) = value[1..17].try_into() {
-                    extensions.push(Extension::MpanState(group_id, bytes));
+                    extensions.push(Extension::MpanState(group, bytes));
                 }
             }
             3 if !value.is_empty() => {
@@ -501,7 +501,7 @@ impl EncryptedEncapsulation {
         data: &'a [u8],
         sender: NodeId,
         receiver: &crate::types::Destination,
-        home_id: crate::types::HomeId,
+        home: crate::types::HomeId,
     ) -> Option<(Self, &'a [u8])> {
         let nsdu_length = data.len() as u16;
         let (header, data) = data.split_at_checked(2)?;
@@ -532,8 +532,8 @@ impl EncryptedEncapsulation {
             data = remaining_data;
         }
 
-        let aad_destination = if let crate::types::Destination::Single(node_id) = receiver {
-            Destination::Singlecast(*node_id)
+        let aad_destination = if let crate::types::Destination::Single(node) = receiver {
+            Destination::Singlecast(*node)
         } else if let Some(unencrypted_extensions) = extensions.as_ref()
             && let Some(Extension::MulticastGroupId(group)) = unencrypted_extensions
                 .iter()
@@ -552,7 +552,7 @@ impl EncryptedEncapsulation {
                 aad: AdditionalAuthenticatedData {
                     sender,
                     destination: aad_destination,
-                    home: home_id,
+                    home,
                     nsdu_length,
                     unencrypted: command_payload[..command_payload.len() - data.len()].to_vec(),
                 },

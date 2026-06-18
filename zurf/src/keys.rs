@@ -66,18 +66,18 @@ impl std::ops::IndexMut<SecurityClass> for KeyRing {
 }
 
 pub trait KeyStore {
-    fn cache_s2_nonce(&mut self, home_id: HomeId, source_node_id: NodeId, nonce: NonceReport);
+    fn cache_s2_nonce(&mut self, home: HomeId, source_node: NodeId, nonce: NonceReport);
     fn decrypt_s2(
         &mut self,
         is_lr: bool,
-        home_id: HomeId,
-        source_node_id: NodeId,
+        home: HomeId,
+        source_node: NodeId,
         mac_destination: &crate::types::Destination,
         encrypted_message: EncryptedEncapsulation,
         ciphertext: &[u8],
     ) -> EncapsulationCommand;
 
-    fn insert_keyring(&mut self, home_id: HomeId, keyring: KeyRing);
+    fn insert_keyring(&mut self, home: HomeId, keyring: KeyRing);
 }
 
 pub struct LruKeyStore {
@@ -100,58 +100,58 @@ impl std::default::Default for LruKeyStore {
 
 fn insert_receiver_entropy(
     entropy_list: &mut FixedKeyValueQueue<25, u64, (PartialEntropyInput, u8)>,
-    home_id: HomeId,
-    node_id: NodeId,
+    home: HomeId,
+    node: NodeId,
     receiver_entropy: PartialEntropyInput,
     sequence_number: u8,
 ) {
-    let key = (home_id.0 as u64) << 16 | (node_id.0 as u64);
+    let key = (home.0 as u64) << 16 | (node.0 as u64);
     entropy_list.push(key, (receiver_entropy, sequence_number));
 }
 
 fn insert_span(
     spans: &mut CLruCache<u64, SpanState>,
-    home_id: HomeId,
-    sender_node_id: NodeId,
-    receiver_node_id: NodeId,
+    home: HomeId,
+    sender_node: NodeId,
+    receiver_node: NodeId,
     span_state: SpanState,
 ) {
-    let bigger_node = sender_node_id.0.max(receiver_node_id.0);
-    let smaller_node = sender_node_id.0.min(receiver_node_id.0);
-    let key = (home_id.0 as u64) << 32 | (bigger_node as u64) << 16 | (smaller_node as u64);
+    let bigger_node = sender_node.0.max(receiver_node.0);
+    let smaller_node = sender_node.0.min(receiver_node.0);
+    let key = (home.0 as u64) << 32 | (bigger_node as u64) << 16 | (smaller_node as u64);
     let _ = spans.put(key, span_state);
 }
 
 fn get_span(
     spans: &mut CLruCache<u64, SpanState>,
-    home_id: HomeId,
-    sender_node_id: NodeId,
-    receiver_node_id: NodeId,
+    home: HomeId,
+    sender_node: NodeId,
+    receiver_node: NodeId,
 ) -> Option<&mut SpanState> {
-    let bigger_node = sender_node_id.0.max(receiver_node_id.0);
-    let smaller_node = sender_node_id.0.min(receiver_node_id.0);
-    let key = (home_id.0 as u64) << 32 | (bigger_node as u64) << 16 | (smaller_node as u64);
+    let bigger_node = sender_node.0.max(receiver_node.0);
+    let smaller_node = sender_node.0.min(receiver_node.0);
+    let key = (home.0 as u64) << 32 | (bigger_node as u64) << 16 | (smaller_node as u64);
     spans.get_mut(&key)
 }
 
 fn insert_mpan(
     mpans: &mut CLruCache<u64, MpanState>,
-    home_id: HomeId,
-    sender_node_id: NodeId,
-    group_id: u8,
+    home: HomeId,
+    sender_node: NodeId,
+    group: u8,
     mpan_state: MpanState,
 ) {
-    let key = (home_id.0 as u64) << 24 | (sender_node_id.0 as u64) << 8 | (group_id as u64);
+    let key = (home.0 as u64) << 24 | (sender_node.0 as u64) << 8 | (group as u64);
     let _ = mpans.put(key, mpan_state);
 }
 
 fn get_mpan(
     mpans: &mut CLruCache<u64, MpanState>,
-    home_id: HomeId,
-    sender_node_id: NodeId,
-    group_id: u8,
+    home: HomeId,
+    sender_node: NodeId,
+    group: u8,
 ) -> Option<&mut MpanState> {
-    let key = (home_id.0 as u64) << 24 | (sender_node_id.0 as u64) << 8 | (group_id as u64);
+    let key = (home.0 as u64) << 24 | (sender_node.0 as u64) << 8 | (group as u64);
     mpans.get_mut(&key)
 }
 
@@ -195,17 +195,17 @@ fn derive_span(
 
 fn get_keyring(
     keyrings: &FixedKeyValueQueue<5, HomeId, KeyRing>,
-    home_id: HomeId,
+    home: HomeId,
 ) -> Option<&KeyRing> {
-    keyrings.get(&home_id)
+    keyrings.get(&home)
 }
 
 fn get_receiver_entropy(
     receivers_entropy: &FixedKeyValueQueue<25, u64, (PartialEntropyInput, u8)>,
-    home_id: HomeId,
-    node_id: NodeId,
+    home: HomeId,
+    node: NodeId,
 ) -> Option<(PartialEntropyInput, u8)> {
-    let key = (home_id.0 as u64) << 16 | (node_id.0 as u64);
+    let key = (home.0 as u64) << 16 | (node.0 as u64);
     if let Some((entropy, sequence_number)) = receivers_entropy.get(&key) {
         Some((entropy.clone(), *sequence_number))
     } else {
@@ -215,22 +215,22 @@ fn get_receiver_entropy(
 
 fn insert_keyring(
     keyrings: &mut FixedKeyValueQueue<5, HomeId, KeyRing>,
-    home_id: HomeId,
+    home: HomeId,
     keyring: KeyRing,
 ) {
-    keyrings.push(home_id, keyring);
+    keyrings.push(home, keyring);
 }
 
 impl KeyStore for LruKeyStore {
-    fn insert_keyring(&mut self, home_id: HomeId, keyring: KeyRing) {
-        insert_keyring(&mut self.keyrings, home_id, keyring);
+    fn insert_keyring(&mut self, home: HomeId, keyring: KeyRing) {
+        insert_keyring(&mut self.keyrings, home, keyring);
     }
 
-    fn cache_s2_nonce(&mut self, home_id: HomeId, source_node_id: NodeId, nonce: NonceReport) {
+    fn cache_s2_nonce(&mut self, home: HomeId, source_node: NodeId, nonce: NonceReport) {
         insert_receiver_entropy(
             &mut self.receivers_entropy,
-            home_id,
-            source_node_id,
+            home,
+            source_node,
             nonce.entropy,
             nonce.sequence_number,
         );
@@ -239,14 +239,14 @@ impl KeyStore for LruKeyStore {
     fn decrypt_s2(
         &mut self,
         is_lr: bool,
-        home_id: HomeId,
-        source_node_id: NodeId,
+        home: HomeId,
+        source_node: NodeId,
         mac_destination: &crate::types::Destination,
         mut encrypted_message: EncryptedEncapsulation,
         ciphertext: &[u8],
     ) -> EncapsulationCommand {
         // TODO store entropy and sequence numbers so SPAN state can be derived after receiving network keys via dbus
-        let network_keys = get_keyring(&self.keyrings, home_id);
+        let network_keys = get_keyring(&self.keyrings, home);
         if network_keys.is_none() {
             return EncapsulationCommand::Security2Encrypted(
                 encrypted_message,
@@ -255,10 +255,10 @@ impl KeyStore for LruKeyStore {
         }
 
         let network_keys = &network_keys.unwrap();
-        let group_id = &encrypted_message.get_multicast_group_id();
-        match (group_id, &mac_destination) {
-            (Some(group_id), _) => {
-                if let Some(mpan) = get_mpan(&mut self.mpans, home_id, source_node_id, *group_id)
+        let group = &encrypted_message.get_multicast_group();
+        match (group, &mac_destination) {
+            (Some(group), _) => {
+                if let Some(mpan) = get_mpan(&mut self.mpans, home, source_node, *group)
                     && let Some(key_expansion) = &network_keys[mpan.security_class]
                     && let Ok(plaintext) = mpan.decrypt_s2_frame(
                         key_expansion,
@@ -271,23 +271,19 @@ impl KeyStore for LruKeyStore {
                     return EncapsulationCommand::Security2Decrypted(
                         encrypted_message,
                         Box::new(EncapsulationCommand::parse(
-                            plaintext,
-                            source_node_id,
+                            plaintext.to_vec(),
+                            source_node,
                             mac_destination,
-                            home_id,
+                            home,
                         )),
                     );
                 }
             }
-            (None, crate::types::Destination::Single(destination_node_id)) => {
+            (None, crate::types::Destination::Single(destination_node)) => {
                 match encrypted_message.get_senders_entropy() {
                     Some(senders_entropy) => {
                         if let Some((receivers_entropy, receivers_sequence_number)) =
-                            get_receiver_entropy(
-                                &self.receivers_entropy,
-                                home_id,
-                                *destination_node_id,
-                            )
+                            get_receiver_entropy(&self.receivers_entropy, home, *destination_node)
                             && let Some((span, plaintext)) = derive_span(
                                 is_lr,
                                 receivers_entropy,
@@ -301,41 +297,37 @@ impl KeyStore for LruKeyStore {
                             let security_class = span.security_class;
                             insert_span(
                                 &mut self.spans,
-                                home_id,
-                                source_node_id,
-                                *destination_node_id,
+                                home,
+                                source_node,
+                                *destination_node,
                                 span,
                             );
                             let plaintext =
                                 encrypted_message.extract_excrypted_extensions(&plaintext);
-                            if let Some((group_id, mpan_state)) = encrypted_message.get_mpan_state()
-                            {
+                            if let Some((group, mpan_state)) = encrypted_message.get_mpan_state() {
                                 insert_mpan(
                                     &mut self.mpans,
-                                    home_id,
-                                    source_node_id,
-                                    group_id,
+                                    home,
+                                    source_node,
+                                    group,
                                     MpanState::new(*mpan_state, security_class),
                                 );
                             }
                             return EncapsulationCommand::Security2Decrypted(
                                 encrypted_message,
                                 Box::new(EncapsulationCommand::parse(
-                                    plaintext,
-                                    source_node_id,
+                                    plaintext.to_vec(),
+                                    source_node,
                                     mac_destination,
-                                    home_id,
+                                    home,
                                 )),
                             );
                         }
                     }
                     None => {
-                        if let Some(span) = get_span(
-                            &mut self.spans,
-                            home_id,
-                            source_node_id,
-                            *destination_node_id,
-                        ) && let Some(nk_expansion) = network_keys[span.security_class]
+                        if let Some(span) =
+                            get_span(&mut self.spans, home, source_node, *destination_node)
+                            && let Some(nk_expansion) = network_keys[span.security_class]
                             && let Ok(plaintext) = span.decrypt_s2_frame(
                                 &nk_expansion,
                                 encrypted_message.sequence_number,
@@ -346,23 +338,22 @@ impl KeyStore for LruKeyStore {
                             let security_class = span.security_class;
                             let plaintext =
                                 encrypted_message.extract_excrypted_extensions(&plaintext);
-                            if let Some((group_id, mpan_state)) = encrypted_message.get_mpan_state()
-                            {
+                            if let Some((group, mpan_state)) = encrypted_message.get_mpan_state() {
                                 insert_mpan(
                                     &mut self.mpans,
-                                    home_id,
-                                    source_node_id,
-                                    group_id,
+                                    home,
+                                    source_node,
+                                    group,
                                     MpanState::new(*mpan_state, security_class),
                                 );
                             }
                             return EncapsulationCommand::Security2Decrypted(
                                 encrypted_message,
                                 Box::new(EncapsulationCommand::parse(
-                                    plaintext,
-                                    source_node_id,
+                                    plaintext.to_vec(),
+                                    source_node,
                                     mac_destination,
-                                    home_id,
+                                    home,
                                 )),
                             );
                         }

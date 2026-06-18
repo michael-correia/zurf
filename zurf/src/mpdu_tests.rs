@@ -10,8 +10,8 @@ fn test_deserialize_singlecast() {
     let mpdu = Data::mpdu_deserialize(&mpdu_bytes, &Channel::Mesh2, &DataSpeed::Mesh40k)
         .unwrap()
         .0;
-    assert_eq!(mpdu.home_id, HomeId(0xFDD09BC7));
-    assert_eq!(mpdu.source_node_id, NodeId(7));
+    assert_eq!(mpdu.home, HomeId(0xFDD09BC7));
+    assert_eq!(mpdu.source_node, NodeId(7));
     assert_eq!(mpdu.header_type, MpduHeaderType::Singlecast);
     assert!(mpdu.ack_requested);
     assert!(!mpdu.low_power);
@@ -32,8 +32,8 @@ fn test_deserialize_singlecast_back_to_back() {
     ];
     let (mpdu, next) =
         Data::mpdu_deserialize(&mpdu_bytes, &Channel::Mesh2, &DataSpeed::Mesh40k).unwrap();
-    assert_eq!(mpdu.home_id, HomeId(0xFDD09BC7));
-    assert_eq!(mpdu.source_node_id, NodeId(7));
+    assert_eq!(mpdu.home, HomeId(0xFDD09BC7));
+    assert_eq!(mpdu.source_node, NodeId(7));
     assert_eq!(mpdu.header_type, MpduHeaderType::Singlecast);
     assert!(mpdu.ack_requested);
     assert!(!mpdu.low_power);
@@ -136,8 +136,8 @@ fn test_deserialize_real_zniffer_data() {
     ];
     let (mpdu1, remainder1) =
         Data::mpdu_deserialize(&frame1_bytes, &Channel::Mesh2, &DataSpeed::Mesh100k).unwrap();
-    assert_eq!(mpdu1.home_id, HomeId(0xF9E0F220));
-    assert_eq!(mpdu1.source_node_id, NodeId(1));
+    assert_eq!(mpdu1.home, HomeId(0xF9E0F220));
+    assert_eq!(mpdu1.source_node, NodeId(1));
     assert_eq!(mpdu1.header_type, MpduHeaderType::Singlecast);
     assert!(mpdu1.ack_requested);
     assert_eq!(mpdu1.sequence_number, 6);
@@ -157,8 +157,8 @@ fn test_deserialize_real_zniffer_data() {
     ];
     let (mpdu2, remainder2) =
         Data::mpdu_deserialize(&frame2_bytes, &Channel::Mesh2, &DataSpeed::Mesh100k).unwrap();
-    assert_eq!(mpdu2.home_id, HomeId(0xF9E0F220));
-    assert_eq!(mpdu2.source_node_id, NodeId(6));
+    assert_eq!(mpdu2.home, HomeId(0xF9E0F220));
+    assert_eq!(mpdu2.source_node, NodeId(6));
     assert_eq!(mpdu2.header_type, MpduHeaderType::Ack);
     assert_eq!(mpdu2.sequence_number, 6);
     assert_eq!(mpdu2.destination, Destination::Single(NodeId(1)));
@@ -172,8 +172,8 @@ fn test_deserialize_real_zniffer_data() {
     ];
     let (mpdu3, remainder3) =
         Data::mpdu_deserialize(&frame3_bytes, &Channel::Mesh2, &DataSpeed::Mesh100k).unwrap();
-    assert_eq!(mpdu3.home_id, HomeId(0xF9E0F220));
-    assert_eq!(mpdu3.source_node_id, NodeId(6));
+    assert_eq!(mpdu3.home, HomeId(0xF9E0F220));
+    assert_eq!(mpdu3.source_node, NodeId(6));
     assert_eq!(mpdu3.header_type, MpduHeaderType::Singlecast);
     assert_eq!(mpdu3.sequence_number, 5);
     assert_eq!(mpdu3.destination, Destination::Single(NodeId(1)));
@@ -214,8 +214,8 @@ fn test_deserialize_routed_singlecast_extension() {
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&bytes, &Channel::Mesh2, &DataSpeed::Mesh100k).unwrap();
 
-    assert_eq!(mpdu.home_id, HomeId(0xECEC74AB));
-    assert_eq!(mpdu.source_node_id, NodeId(1));
+    assert_eq!(mpdu.home, HomeId(0xECEC74AB));
+    assert_eq!(mpdu.source_node, NodeId(1));
     assert_eq!(mpdu.header_type, MpduHeaderType::Routed);
     assert!(!mpdu.ack_requested);
     assert_eq!(mpdu.sequence_number, 11);
@@ -233,7 +233,7 @@ fn test_deserialize_routed_singlecast_extension() {
             routed_result: None,
             failed_hop: None,
             repeaters: Some(vec![Hop {
-                node_id: NodeId(3),
+                node: NodeId(3),
                 rssi: Err(RssiError::NotAvailable),
             }]),
             beaming: None,
@@ -253,8 +253,8 @@ fn test_deserialize_extended_routing_header() {
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&bytes, &Channel::Mesh2, &DataSpeed::Mesh100k).unwrap();
 
-    assert_eq!(mpdu.home_id, HomeId(0xECEC74AB));
-    assert_eq!(mpdu.source_node_id, NodeId(1));
+    assert_eq!(mpdu.home, HomeId(0xECEC74AB));
+    assert_eq!(mpdu.source_node, NodeId(1));
     assert_eq!(mpdu.header_type, MpduHeaderType::Routed);
     assert_eq!(mpdu.sequence_number, 11);
     assert_eq!(mpdu.destination, Destination::Single(NodeId(86)));
@@ -272,11 +272,11 @@ fn test_deserialize_extended_routing_header() {
             failed_hop: None,
             repeaters: Some(vec![
                 Hop {
-                    node_id: NodeId(4),
+                    node: NodeId(4),
                     rssi: Ok(20),
                 },
                 Hop {
-                    node_id: NodeId(5),
+                    node: NodeId(5),
                     rssi: Ok(30),
                 },
             ]),
@@ -298,8 +298,8 @@ fn test_deserialize_channel3_routed_header() {
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&bytes, &Channel::Mesh3, &DataSpeed::Mesh100k).unwrap();
 
-    assert_eq!(mpdu.home_id, HomeId(0xECEC74AB));
-    assert_eq!(mpdu.source_node_id, NodeId(1));
+    assert_eq!(mpdu.home, HomeId(0xECEC74AB));
+    assert_eq!(mpdu.source_node, NodeId(1));
     assert_eq!(mpdu.header_type, MpduHeaderType::Routed);
     assert_eq!(mpdu.sequence_number, 11);
     assert_eq!(mpdu.destination, Destination::Single(NodeId(86)));
@@ -316,7 +316,7 @@ fn test_deserialize_channel3_routed_header() {
             routed_result: None,
             failed_hop: None,
             repeaters: Some(vec![Hop {
-                node_id: NodeId(3),
+                node: NodeId(3),
                 rssi: Err(RssiError::NotAvailable),
             }]),
             beaming: None,
@@ -333,8 +333,8 @@ fn test_deserialize_explorer_normal() {
     ];
     let (mpdu1, remainder1) =
         Data::mpdu_deserialize(&bytes1, &Channel::Mesh2, &DataSpeed::Mesh40k).unwrap();
-    assert_eq!(mpdu1.home_id, HomeId(0xF22FC1AB));
-    assert_eq!(mpdu1.source_node_id, NodeId(99));
+    assert_eq!(mpdu1.home, HomeId(0xF22FC1AB));
+    assert_eq!(mpdu1.source_node, NodeId(99));
     assert_eq!(mpdu1.header_type, MpduHeaderType::Explore);
     assert!(mpdu1.ack_requested);
     assert_eq!(mpdu1.sequence_number, 3);
@@ -364,8 +364,8 @@ fn test_deserialize_explorer_normal() {
     ];
     let (mpdu2, remainder2) =
         Data::mpdu_deserialize(&bytes2, &Channel::Mesh2, &DataSpeed::Mesh40k).unwrap();
-    assert_eq!(mpdu2.home_id, HomeId(0xF22FC1AB));
-    assert_eq!(mpdu2.source_node_id, NodeId(99));
+    assert_eq!(mpdu2.home, HomeId(0xF22FC1AB));
+    assert_eq!(mpdu2.source_node, NodeId(99));
     assert_eq!(mpdu2.header_type, MpduHeaderType::Explore);
     assert!(mpdu2.ack_requested);
     assert_eq!(mpdu2.sequence_number, 3);
@@ -396,8 +396,8 @@ fn test_deserialize_singlecast_node8() {
     ];
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&mpdu_bytes, &Channel::Mesh2, &DataSpeed::Mesh40k).unwrap();
-    assert_eq!(mpdu.home_id, HomeId(0xFDD09BC7));
-    assert_eq!(mpdu.source_node_id, NodeId(1));
+    assert_eq!(mpdu.home, HomeId(0xFDD09BC7));
+    assert_eq!(mpdu.source_node, NodeId(1));
     assert_eq!(mpdu.header_type, MpduHeaderType::Singlecast);
     assert!(mpdu.ack_requested);
     assert!(!mpdu.low_power);
@@ -430,8 +430,8 @@ fn test_deserialize_multicast() {
 
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&data, &Channel::Mesh2, &DataSpeed::Mesh40k).unwrap();
-    assert_eq!(mpdu.home_id, HomeId(0x12345678));
-    assert_eq!(mpdu.source_node_id, NodeId(3));
+    assert_eq!(mpdu.home, HomeId(0x12345678));
+    assert_eq!(mpdu.source_node, NodeId(3));
     assert_eq!(mpdu.header_type, MpduHeaderType::Multicast);
     assert_eq!(mpdu.sequence_number, 1);
 
@@ -463,8 +463,8 @@ fn test_deserialize_multicast_forum_report() {
 
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&data, &Channel::Mesh2, &DataSpeed::Mesh40k).unwrap();
-    assert_eq!(mpdu.home_id, HomeId(0xEFF537A2));
-    assert_eq!(mpdu.source_node_id, NodeId(73));
+    assert_eq!(mpdu.home, HomeId(0xEFF537A2));
+    assert_eq!(mpdu.source_node, NodeId(73));
     assert_eq!(mpdu.header_type, MpduHeaderType::Multicast);
     assert_eq!(mpdu.sequence_number, 1);
     assert_eq!(mpdu.checksum, Some(CRCMode::XorChecksum(0xB2)));
@@ -559,7 +559,7 @@ fn test_explorer_inbound_inclusion_info() {
         assert_eq!(
             exp.command,
             ExplorerPayload::InclusionInformation {
-                home_id: Some(HomeId(0x11223344))
+                home: Some(HomeId(0x11223344))
             }
         );
     } else {
@@ -580,7 +580,7 @@ fn test_explorer_search_command() {
         0x05, // Third byte (random_tx_interval)
         0x00, // Fourth byte (ignored repeater count)
         0x03, 0x04, 0x00, 0x00, // Repeaters: Node 3, Node 4
-        0x07, // Search source_node_id = 7
+        0x07, // Search source_node = 7
         0x0E, // Search frame_handle = 14
         0x00, // TTL / result repeater count (ignored)
         0x01, 0x02, 0x00, 0x00, // Result repeaters: Node 1, Node 2
@@ -601,7 +601,7 @@ fn test_explorer_search_command() {
         assert_eq!(
             exp.command,
             ExplorerPayload::Search {
-                source_node_id: NodeId(7),
+                source_node: NodeId(7),
                 frame_handle: 14,
                 result_repeaters: vec![NodeId(1), NodeId(2)]
             }
@@ -612,7 +612,7 @@ fn test_explorer_search_command() {
 }
 
 #[test]
-fn test_explorer_inclusion_info_zero_home_id() {
+fn test_explorer_inclusion_info_zero_home() {
     let mut bytes = vec![
         0xF2, 0x2F, 0xC1, 0xAB, 0x63, 0x45, 0x03, 23, 0x01, 0x21, 0x02, 0x05, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Home ID = 0
@@ -625,7 +625,7 @@ fn test_explorer_inclusion_info_zero_home_id() {
     if let Some(RoutingExtension::Explore(ref exp)) = mpdu.routing_extension {
         assert_eq!(
             exp.command,
-            ExplorerPayload::InclusionInformation { home_id: None }
+            ExplorerPayload::InclusionInformation { home: None }
         );
     } else {
         panic!("Expected RoutingExtension::Explore");
@@ -718,8 +718,8 @@ fn test_lr_deserialize_singlecast() {
 
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&data, &Channel::LongRangeA, &DataSpeed::LongRange100k).unwrap();
-    assert_eq!(mpdu.home_id, HomeId(0xFDD09BC7));
-    assert_eq!(mpdu.source_node_id, NodeId(1));
+    assert_eq!(mpdu.home, HomeId(0xFDD09BC7));
+    assert_eq!(mpdu.source_node, NodeId(1));
     assert_eq!(mpdu.destination, Destination::Single(NodeId(0x100)));
     assert_eq!(mpdu.header_type, MpduHeaderType::Singlecast);
     assert_eq!(mpdu.sequence_number, 2);
@@ -753,8 +753,8 @@ fn test_lr_deserialize_ack() {
 
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&data, &Channel::LongRangeA, &DataSpeed::LongRange100k).unwrap();
-    assert_eq!(mpdu.home_id, HomeId(0xFDD09BC7));
-    assert_eq!(mpdu.source_node_id, NodeId(0x100));
+    assert_eq!(mpdu.home, HomeId(0xFDD09BC7));
+    assert_eq!(mpdu.source_node, NodeId(0x100));
     assert_eq!(mpdu.destination, Destination::Single(NodeId(1)));
     assert_eq!(mpdu.header_type, MpduHeaderType::Ack);
     assert_eq!(mpdu.sequence_number, 0x15);
@@ -785,8 +785,8 @@ fn test_lr_deserialize_with_extension() {
 
     let (mpdu, remainder) =
         Data::mpdu_deserialize(&data, &Channel::LongRangeA, &DataSpeed::LongRange100k).unwrap();
-    assert_eq!(mpdu.home_id, HomeId(0xFDD09BC7));
-    assert_eq!(mpdu.source_node_id, NodeId(1));
+    assert_eq!(mpdu.home, HomeId(0xFDD09BC7));
+    assert_eq!(mpdu.source_node, NodeId(1));
     assert_eq!(mpdu.destination, Destination::Single(NodeId(0x100)));
     assert_eq!(mpdu.header_type, MpduHeaderType::Singlecast);
     assert_eq!(mpdu.sequence_number, 2);
@@ -800,4 +800,162 @@ fn test_lr_deserialize_with_extension() {
     );
     assert_eq!(mpdu.checksum, Some(CRCMode::CrcCcitt(crc)));
     assert!(remainder.is_empty());
+}
+
+#[test]
+fn test_transport_service_deserialize_first_segment() {
+    // First segment with datagram size = 300 (size_10_to_8 = 1, size_7_to_0 = 44 = 0x2C)
+    // Command byte: 0xC0 | 1 = 0xC1
+    // Metadata: session ID = 5, extension = false (0x50)
+    // Payload: [0x01, 0x02, 0x03]
+    // FCS: [0xAA, 0xBB] (2 bytes, ignored in deserialization but stripped off)
+    let bytes = vec![0x55, 0xC1, 0x2C, 0x50, 0x01, 0x02, 0x03, 0xAA, 0xBB];
+
+    let cache = TransportServiceEncapsulation::deserialize(
+        &bytes,
+        NodeId(7),
+        &Destination::Single(NodeId(1)),
+        HomeId(0x12345678),
+    )
+    .unwrap();
+
+    assert_eq!(cache.sender, NodeId(7));
+    assert_eq!(cache.destination, Destination::Single(NodeId(1)));
+    assert_eq!(cache.home, HomeId(0x12345678));
+    assert_eq!(cache.session, 5);
+    assert_eq!(cache.datagram_offset, 0);
+    assert_eq!(cache.buffer, vec![0x01, 0x02, 0x03]);
+}
+
+#[test]
+fn test_transport_service_deserialize_subsequent_segment() {
+    // Subsequent segment with datagram size = 300 (size_10_to_8 = 1, size_7_to_0 = 0x2C)
+    // Command byte: 0xE0 | 1 = 0xE1
+    // Metadata: session ID = 5, extension = false, offset_10_to_8 = 0 (0x50)
+    // Offset LSB: 200 = 0xC8
+    // Payload: [0x04, 0x05, 0x06]
+    // FCS: [0xCC, 0xDD]
+    let bytes = vec![0x55, 0xE1, 0x2C, 0x50, 0xC8, 0x04, 0x05, 0x06, 0xCC, 0xDD];
+
+    let cache = TransportServiceEncapsulation::deserialize(
+        &bytes,
+        NodeId(7),
+        &Destination::Single(NodeId(1)),
+        HomeId(0x12345678),
+    )
+    .unwrap();
+
+    assert_eq!(cache.sender, NodeId(7));
+    assert_eq!(cache.destination, Destination::Single(NodeId(1)));
+    assert_eq!(cache.home, HomeId(0x12345678));
+    assert_eq!(cache.session, 5);
+    assert_eq!(cache.datagram_offset, 200);
+    assert_eq!(cache.buffer, vec![0x04, 0x05, 0x06]);
+}
+
+#[test]
+fn test_transport_service_deserialize_with_extensions() {
+    // First segment with extension
+    // Command byte: 0xC0 (datagram size = 10, size_10_to_8 = 0)
+    // size_7_to_0: 10 = 0x0A
+    // Metadata: session ID = 2, extension = true (0x28)
+    // Extension: length = 3, data = [0xAA, 0xBB, 0xCC]
+    // Payload: [0x01, 0x02]
+    // FCS: [0x11, 0x22]
+    let bytes = vec![
+        0x55, 0xC0, 0x0A, 0x28, // Header
+        0x03, 0xAA, 0xBB, 0xCC, // Extension length + data
+        0x01, 0x02, // Payload
+        0x11, 0x22, // FCS
+    ];
+
+    let cache = TransportServiceEncapsulation::deserialize(
+        &bytes,
+        NodeId(7),
+        &Destination::Single(NodeId(1)),
+        HomeId(0x12345678),
+    )
+    .unwrap();
+
+    assert_eq!(cache.sender, NodeId(7));
+    assert_eq!(cache.destination, Destination::Single(NodeId(1)));
+    assert_eq!(cache.home, HomeId(0x12345678));
+    assert_eq!(cache.session, 2);
+    assert_eq!(cache.datagram_offset, 0);
+    assert_eq!(cache.buffer, vec![0x01, 0x02]);
+}
+
+#[test]
+fn test_transport_service_deserialize_errors() {
+    // Destination is not Singlecast (e.g. Broadcast)
+    let bytes = vec![0x55, 0xC0, 0x0A, 0x50, 0x01, 0xAA, 0xBB];
+    let res = TransportServiceEncapsulation::deserialize(
+        &bytes,
+        NodeId(7),
+        &Destination::Broadcast,
+        HomeId(0x12345678),
+    );
+    assert_eq!(res, Err(ParseError::Invalid));
+
+    // Invalid command class / command byte
+    let bytes_invalid_cmd = vec![0x55, 0x20, 0x0A, 0x50, 0x01, 0xAA, 0xBB];
+    let res = TransportServiceEncapsulation::deserialize(
+        &bytes_invalid_cmd,
+        NodeId(7),
+        &Destination::Single(NodeId(1)),
+        HomeId(0x12345678),
+    );
+    assert_eq!(res, Err(ParseError::Invalid));
+
+    // Incomplete data (too short to have FCS)
+    let bytes_short = vec![0x55, 0xC0, 0x0A, 0x50];
+    let res = TransportServiceEncapsulation::deserialize(
+        &bytes_short,
+        NodeId(7),
+        &Destination::Single(NodeId(1)),
+        HomeId(0x12345678),
+    );
+    assert_eq!(res, Err(ParseError::Incomplete));
+}
+
+#[test]
+fn test_encapsulation_command_parse_transport_service() {
+    // Test First Segment mapping in EncapsulationCommand::parse
+    let first_segment_bytes = vec![0x55, 0xC1, 0x2C, 0x50, 0x01, 0x02, 0x03, 0xAA, 0xBB];
+    let parsed = EncapsulationCommand::parse(
+        first_segment_bytes,
+        NodeId(7),
+        &Destination::Single(NodeId(1)),
+        HomeId(0x12345678),
+    );
+
+    if let EncapsulationCommand::TransportFirstSegment(cache) = parsed {
+        assert_eq!(cache.session, 5);
+        assert_eq!(cache.buffer, vec![0x01, 0x02, 0x03]);
+    } else {
+        panic!(
+            "Expected EncapsulationCommand::TransportFirstSegment, got {:?}",
+            parsed
+        );
+    }
+
+    // Test Subsequent Segment mapping in EncapsulationCommand::parse
+    let subsequent_segment_bytes = vec![0x55, 0xE1, 0x2C, 0x50, 0xC8, 0x04, 0x05, 0x06, 0xCC, 0xDD];
+    let parsed = EncapsulationCommand::parse(
+        subsequent_segment_bytes,
+        NodeId(7),
+        &Destination::Single(NodeId(1)),
+        HomeId(0x12345678),
+    );
+
+    if let EncapsulationCommand::TransportSegment(cache) = parsed {
+        assert_eq!(cache.session, 5);
+        assert_eq!(cache.datagram_offset, 200);
+        assert_eq!(cache.buffer, vec![0x04, 0x05, 0x06]);
+    } else {
+        panic!(
+            "Expected EncapsulationCommand::TransportSegment, got {:?}",
+            parsed
+        );
+    }
 }

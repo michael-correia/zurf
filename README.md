@@ -10,7 +10,7 @@ Zurf is a project for me to learn Rust. As such, you may find some amateur mista
 
 ## Features
 
-Right now, `zurf` is bare-bones and only reads Mesh data frames. It does not break them down by command class, nor does  unencapsulate messages. These features will come at a later date. The roadmap for this project is to create two separate binaries: one very lightweight daemon that can run on an embedded device (or Linux desktop) and a cross-platform GUI that can run on any OS and receive data from the daemon. S2 decryption should work; S0 is not implemented. (Known issue: S2 entropy exchange with Transport service will break decryption. This is because transport service is an outer encapsulation that has no special logic...yet)
+Right now, `zurf` is bare-bones and only reads Mesh data frames. It does not break them down by command class, nor does  unencapsulate messages. These features will come at a later date. The roadmap for this project is to create two separate binaries: one very lightweight daemon that can run on an embedded device (or Linux desktop) and a cross-platform GUI that can run on any OS and receive data from the daemon. S2 decryption should work; S0 is not implemented.
 
 ## Licensing
 

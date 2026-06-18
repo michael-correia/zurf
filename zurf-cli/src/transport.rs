@@ -98,6 +98,11 @@ impl IoUringUART {
         // Set Region Command
         port.write_all(&[0x23, 0x02, 0x01, region])?;
 
+        if region == 9 || region == 11 {
+            // TODO specify which channels you actually want. Let's just assume one of each
+            port.write_all(&[0x23, 0x06, 0x01, 1])?;
+        }
+
         let mut serial_buf: Vec<u8> = vec![0; 32];
         for _ in 0..3 {
             port.write_all(&[0x23, 0x05, 0x00])?;

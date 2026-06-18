@@ -41,7 +41,7 @@ pub type Rssi = Result<i8, RssiError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hop {
-    pub node_id: NodeId,
+    pub node: NodeId,
     pub rssi: Rssi,
 }
 

@@ -11,7 +11,7 @@ use zurf::{
 struct Args {
     port: String,
     region: u8,
-    home_id: Option<HomeId>,
+    home: Option<HomeId>,
     unauthenticated_key: Option<Key>,
     mesh_authenticated_key: Option<Key>,
     mesh_access_control_key: Option<Key>,
@@ -54,7 +54,7 @@ fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let mut port = None;
     let mut region = None;
-    let mut home_id: Option<HomeId> = None;
+    let mut home: Option<HomeId> = None;
     //let mut s0_key: Option<Key> = None;
     let mut unauthenticated_key: Option<Key> = None;
     let mut mesh_authenticated_key: Option<Key> = None;
@@ -83,7 +83,7 @@ fn parse_args() -> Result<Args, String> {
             "--home" | "--home-id" => {
                 let k_str = args.next().ok_or("Missing value for --home")?;
                 let k_val = decode_hex(&k_str)?;
-                home_id = Some(HomeId(u32::from_be_bytes(k_val)));
+                home = Some(HomeId(u32::from_be_bytes(k_val)));
             }
             //"--s0-key" => {
             //    let k_str = args.next().ok_or("Missing value for --s0-key")?;
@@ -138,7 +138,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args {
         port,
         region,
-        home_id,
+        home,
         unauthenticated_key,
         mesh_authenticated_key,
         mesh_access_control_key,
@@ -170,8 +170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = transport::IoUringUART::new(&args.port, args.region)?;
 
     let mut keystore = keys::LruKeyStore::default();
-    if let Some(home_id) = args.home_id {
-        keystore.insert_keyring(home_id, keyring);
+    if let Some(home) = args.home {
+        keystore.insert_keyring(home, keyring);
     }
     let parser = zurf::parser::Parser::new(keystore);
     let mut zniffer = zniffer::Zniffer::new(parser, transport);
