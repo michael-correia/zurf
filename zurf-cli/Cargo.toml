@@ -1,11 +1,11 @@
 [package]
 name = "zurf-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "CLI tool for the zurf Z-Wave parser"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-zurf = { path = "../zurf", version = "0.2.0" }
+zurf = { path = "../zurf", version = "0.3.0" }
 io-uring = "0.7.11"
 libc = "0.2.185"
