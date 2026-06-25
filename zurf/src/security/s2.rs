@@ -521,10 +521,6 @@ impl EncryptedEncapsulation {
             ((*has_extension & 0b0000_0010) != 0),
         );
 
-        if has_encrypted_extensions {
-            print!("\n\n\nHAS ENCRYPTED EXTENSIONS!\n\n\n")
-        }
-
         let mut extensions: Option<Vec<Extension>> = None;
         if has_extension {
             let (unencrypted_extensions, remaining_data) = parse_decrypted_extensions(data)?;
