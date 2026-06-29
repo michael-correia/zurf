@@ -200,7 +200,6 @@ impl SpanState {
         }
 
         let mut iterations: u16;
-        //drbg.generate::<13>();
         for i in 0..diff {
             iterations = i;
             let nonce: [u8; 13] = drbg.generate();

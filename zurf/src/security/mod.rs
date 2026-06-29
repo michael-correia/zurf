@@ -1,4 +1,4 @@
-//pub mod s0;
+pub mod s0;
 pub mod s2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

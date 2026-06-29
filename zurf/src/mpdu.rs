@@ -146,6 +146,13 @@ pub enum EncapsulationCommand {
     SupervisionGet(Box<EncapsulationCommand>),
     Security2Encrypted(EncryptedEncapsulation, Vec<u8>),
     Security2Decrypted(EncryptedEncapsulation, Box<EncapsulationCommand>),
+    Security0Encrypted(crate::security::s0::EncryptedEncapsulation, Vec<u8>),
+    Security0DecryptedFirst(crate::security::s0::EncryptedEncapsulation, Vec<u8>),
+    Security0DecryptedSecond(crate::security::s0::EncryptedEncapsulation, Vec<u8>),
+    Security0Decrypted(
+        crate::security::s0::EncryptedEncapsulation,
+        Box<EncapsulationCommand>,
+    ),
     Security0(Box<EncapsulationCommand>),
     CRC16(Box<EncapsulationCommand>),
     MultiCommand(Vec<EncapsulationCommand>),
@@ -164,6 +171,14 @@ impl EncapsulationCommand {
         home: crate::types::HomeId,
     ) -> Self {
         match data.get(..2) {
+            Some(&[0x98, 0x81]) | Some(&[0x98, 0xC1]) => {
+                let frame = crate::security::s0::EncryptedEncapsulation::deserialize(&data);
+                if let Some((encapsulation, payload)) = frame {
+                    EncapsulationCommand::Security0Encrypted(encapsulation, payload)
+                } else {
+                    EncapsulationCommand::Unencapsulated(data)
+                }
+            }
             Some(&[0x9F, 0x02]) => NonceReport::deserialize(data.as_slice())
                 .map(EncapsulationCommand::S2Nonce)
                 .unwrap_or_else(|| EncapsulationCommand::Unencapsulated(data)),
