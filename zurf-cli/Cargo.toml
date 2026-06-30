@@ -7,5 +7,5 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 zurf = { path = "../zurf", version = "0.3.0" }
-io-uring = "0.7.11"
-libc = "0.2.185"
+io-uring = "0.7.13"
+libc = "0.2.186"
