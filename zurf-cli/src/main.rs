@@ -12,6 +12,7 @@ struct Args {
     port: String,
     region: u8,
     home: Option<HomeId>,
+    s0_key: Option<Key>,
     unauthenticated_key: Option<Key>,
     mesh_authenticated_key: Option<Key>,
     mesh_access_control_key: Option<Key>,
@@ -55,7 +56,7 @@ fn parse_args() -> Result<Args, String> {
     let mut port = None;
     let mut region = None;
     let mut home: Option<HomeId> = None;
-    //let mut s0_key: Option<Key> = None;
+    let mut s0_key: Option<Key> = None;
     let mut unauthenticated_key: Option<Key> = None;
     let mut mesh_authenticated_key: Option<Key> = None;
     let mut mesh_access_control_key: Option<Key> = None;
@@ -85,11 +86,11 @@ fn parse_args() -> Result<Args, String> {
                 let k_val = decode_hex(&k_str)?;
                 home = Some(HomeId(u32::from_be_bytes(k_val)));
             }
-            //"--s0-key" => {
-            //    let k_str = args.next().ok_or("Missing value for --s0-key")?;
-            //    let k_val = decode_hex(&k_str)?;
-            //    s0_key = Some(Key::new(k_val));
-            //}
+            "--s0-key" => {
+                let k_str = args.next().ok_or("Missing value for --s0-key")?;
+                let k_val = decode_hex(&k_str)?;
+                s0_key = Some(Key::new(k_val));
+            }
             "--unauthenticated-key" => {
                 let k_str = args
                     .next()
@@ -139,6 +140,7 @@ fn parse_args() -> Result<Args, String> {
         port,
         region,
         home,
+        s0_key,
         unauthenticated_key,
         mesh_authenticated_key,
         mesh_access_control_key,
@@ -161,6 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.port, args.region
     );
     let keyring = keys::KeyRing::new(
+        args.s0_key,
         args.unauthenticated_key,
         args.mesh_authenticated_key,
         args.mesh_access_control_key,

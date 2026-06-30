@@ -11,6 +11,7 @@ use crate::{
     },
     types::{FixedKeyValueQueue, HomeId, NodeId},
 };
+
 use zurf_enum_derive::TryFromU8;
 
 // will use to store SPANs and MPANs
@@ -28,11 +29,13 @@ pub enum SecurityClass {
 
 #[derive(Default, Clone)]
 pub struct KeyRing {
-    keys: [Option<NetworkKeyExpansion>; 5],
+    s0_key: Option<crate::security::s0::NetworkKeyExpansion>,
+    s2_keys: [Option<NetworkKeyExpansion>; 5],
 }
 
 impl KeyRing {
     pub fn new(
+        security_zero_key: Option<Key>,
         unauthenticated_key: Option<Key>,
         mesh_authenticated_key: Option<Key>,
         mesh_access_control_key: Option<Key>,
@@ -40,7 +43,9 @@ impl KeyRing {
         lr_access_control_key: Option<Key>,
     ) -> Self {
         Self {
-            keys: [
+            s0_key: security_zero_key
+                .map(|key| crate::security::s0::NetworkKeyExpansion::new(&key)),
+            s2_keys: [
                 unauthenticated_key.map(|key| NetworkKeyExpansion::new(&key)),
                 mesh_authenticated_key.map(|key| NetworkKeyExpansion::new(&key)),
                 mesh_access_control_key.map(|key| NetworkKeyExpansion::new(&key)),
@@ -55,18 +60,39 @@ impl std::ops::Index<SecurityClass> for KeyRing {
     type Output = Option<NetworkKeyExpansion>;
 
     fn index(&self, index: SecurityClass) -> &Self::Output {
-        &self.keys[index as usize]
+        &self.s2_keys[index as usize]
     }
 }
 
 impl std::ops::IndexMut<SecurityClass> for KeyRing {
     fn index_mut(&mut self, index: SecurityClass) -> &mut Self::Output {
-        &mut self.keys[index as usize]
+        &mut self.s2_keys[index as usize]
     }
 }
 
 pub trait KeyStore {
-    fn cache_s2_nonce(&mut self, home: HomeId, source_node: NodeId, nonce: NonceReport);
+    fn cache_s0_nonce(
+        &mut self,
+        home: HomeId,
+        source_node: NodeId,
+        receiver_node: NodeId,
+        nonce: crate::security::s0::NoncePartial,
+    );
+    fn cache_s2_nonce(
+        &mut self,
+        home: HomeId,
+        source_node: NodeId,
+        destination_node: NodeId,
+        nonce: NonceReport,
+    );
+    fn decrypt_s0(
+        &mut self,
+        home: HomeId,
+        source_node: NodeId,
+        receiver_node: NodeId,
+        encrypted_message: &crate::security::s0::EncryptedEncapsulation,
+        ciphertext: &[u8],
+    ) -> Option<(crate::security::s0::DecryptedEncapsulation, Vec<u8>)>;
     fn decrypt_s2(
         &mut self,
         is_lr: bool,
@@ -83,6 +109,7 @@ pub trait KeyStore {
 pub struct LruKeyStore {
     keyrings: FixedKeyValueQueue<5, HomeId, KeyRing>,
     receivers_entropy: FixedKeyValueQueue<25, u64, (PartialEntropyInput, u8)>,
+    receivers_partial_nonce: FixedKeyValueQueue<10, u64, crate::security::s0::NoncePartial>,
     spans: CLruCache<u64, SpanState>,
     mpans: CLruCache<u64, MpanState>,
 }
@@ -92,6 +119,7 @@ impl std::default::Default for LruKeyStore {
         Self {
             keyrings: FixedKeyValueQueue::default(),
             receivers_entropy: FixedKeyValueQueue::default(),
+            receivers_partial_nonce: FixedKeyValueQueue::default(),
             spans: CLruCache::new(NonZeroUsize::new(64).unwrap()),
             mpans: CLruCache::new(NonZeroUsize::new(64).unwrap()),
         }
@@ -101,12 +129,41 @@ impl std::default::Default for LruKeyStore {
 fn insert_receiver_entropy(
     entropy_list: &mut FixedKeyValueQueue<25, u64, (PartialEntropyInput, u8)>,
     home: HomeId,
-    node: NodeId,
+    generator_node: NodeId,
+    receiver_node: NodeId,
     receiver_entropy: PartialEntropyInput,
     sequence_number: u8,
 ) {
-    let key = (home.0 as u64) << 16 | (node.0 as u64);
+    let key = (home.0 as u64) << 32 | (generator_node.0 as u64) << 16 | (receiver_node.0 as u64);
     entropy_list.push(key, (receiver_entropy, sequence_number));
+}
+
+fn insert_receiver_partial_nonce(
+    receivers_partial_nonce: &mut FixedKeyValueQueue<10, u64, crate::security::s0::NoncePartial>,
+    home: HomeId,
+    generator_node: NodeId,
+    receiver_node: NodeId,
+    receiver_entropy: crate::security::s0::NoncePartial,
+) {
+    let key = (home.0 as u64) << 32
+        | (generator_node.0 as u64 & 0xFF) << 24
+        | (receiver_node.0 as u64 & 0xFF) << 16
+        | receiver_entropy.0[0] as u64;
+    receivers_partial_nonce.push(key, receiver_entropy);
+}
+
+fn get_receiver_partial_nonce(
+    receivers_partial_nonce: &FixedKeyValueQueue<10, u64, crate::security::s0::NoncePartial>,
+    home: HomeId,
+    generator_node: NodeId,
+    receiver_node: NodeId,
+    receivers_nonce_id: u8,
+) -> Option<&crate::security::s0::NoncePartial> {
+    let key = (home.0 as u64) << 32
+        | (generator_node.0 as u64 & 0xFF) << 24
+        | (receiver_node.0 as u64 & 0xFF) << 16
+        | receivers_nonce_id as u64;
+    receivers_partial_nonce.get(&key)
 }
 
 fn insert_span(
@@ -119,7 +176,7 @@ fn insert_span(
     let bigger_node = sender_node.0.max(receiver_node.0);
     let smaller_node = sender_node.0.min(receiver_node.0);
     let key = (home.0 as u64) << 32 | (bigger_node as u64) << 16 | (smaller_node as u64);
-    let _ = spans.put(key, span_state);
+    spans.put(key, span_state);
 }
 
 fn get_span(
@@ -142,7 +199,7 @@ fn insert_mpan(
     mpan_state: MpanState,
 ) {
     let key = (home.0 as u64) << 24 | (sender_node.0 as u64) << 8 | (group as u64);
-    let _ = mpans.put(key, mpan_state);
+    mpans.put(key, mpan_state);
 }
 
 fn get_mpan(
@@ -203,9 +260,10 @@ fn get_keyring(
 fn get_receiver_entropy(
     receivers_entropy: &FixedKeyValueQueue<25, u64, (PartialEntropyInput, u8)>,
     home: HomeId,
-    node: NodeId,
+    generator_node: NodeId,
+    receiver_node: NodeId,
 ) -> Option<(PartialEntropyInput, u8)> {
-    let key = (home.0 as u64) << 16 | (node.0 as u64);
+    let key = (home.0 as u64) << 32 | (generator_node.0 as u64) << 16 | (receiver_node.0 as u64);
     if let Some((entropy, sequence_number)) = receivers_entropy.get(&key) {
         Some((entropy.clone(), *sequence_number))
     } else {
@@ -226,14 +284,64 @@ impl KeyStore for LruKeyStore {
         insert_keyring(&mut self.keyrings, home, keyring);
     }
 
-    fn cache_s2_nonce(&mut self, home: HomeId, source_node: NodeId, nonce: NonceReport) {
+    fn cache_s2_nonce(
+        &mut self,
+        home: HomeId,
+        source_node: NodeId,
+        destination_node: NodeId,
+        nonce: NonceReport,
+    ) {
         insert_receiver_entropy(
             &mut self.receivers_entropy,
             home,
             source_node,
+            destination_node,
             nonce.entropy,
             nonce.sequence_number,
         );
+    }
+
+    fn cache_s0_nonce(
+        &mut self,
+        home: HomeId,
+        source_node: NodeId,
+        receiver_node: NodeId,
+        nonce: crate::security::s0::NoncePartial,
+    ) {
+        insert_receiver_partial_nonce(
+            &mut self.receivers_partial_nonce,
+            home,
+            source_node,
+            receiver_node,
+            nonce,
+        );
+    }
+
+    fn decrypt_s0(
+        &mut self,
+        home: HomeId,
+        source_node: NodeId,
+        receiver_node: NodeId,
+        encrypted_message: &crate::security::s0::EncryptedEncapsulation,
+        ciphertext: &[u8],
+    ) -> Option<(crate::security::s0::DecryptedEncapsulation, Vec<u8>)> {
+        let network_keys = get_keyring(&self.keyrings, home)?.s0_key?;
+        let receivers_nonce = get_receiver_partial_nonce(
+            &self.receivers_partial_nonce,
+            home,
+            source_node,
+            receiver_node,
+            encrypted_message.receivers_nonce_id,
+        )?;
+        encrypted_message
+            .decrypt(
+                ciphertext,
+                &network_keys,
+                source_node,
+                receiver_node,
+                receivers_nonce,
+            )
+            .ok()
     }
 
     fn decrypt_s2(
@@ -283,7 +391,12 @@ impl KeyStore for LruKeyStore {
                 match encrypted_message.get_senders_entropy() {
                     Some(senders_entropy) => {
                         if let Some((receivers_entropy, receivers_sequence_number)) =
-                            get_receiver_entropy(&self.receivers_entropy, home, *destination_node)
+                            get_receiver_entropy(
+                                &self.receivers_entropy,
+                                home,
+                                *destination_node,
+                                source_node,
+                            )
                             && let Some((span, plaintext)) = derive_span(
                                 is_lr,
                                 receivers_entropy,
@@ -382,11 +495,12 @@ mod tests {
             &mut keystore.receivers_entropy,
             HomeId(0xfdd09bc7),
             NodeId(1),
+            NodeId(2),
             public_entropy,
             0,
         );
 
-        let keyring = KeyRing::new(Some(permanent_network_key), None, None, None, None);
+        let keyring = KeyRing::new(None, Some(permanent_network_key), None, None, None, None);
         insert_keyring(&mut keystore.keyrings, HomeId(0xfdd09bc7), keyring);
 
         // Frame 1 S2 Payload (43 bytes): 0x9F, 0x03, S2 Header (20 bytes), Ciphertext (21 bytes)
@@ -511,11 +625,12 @@ mod tests {
             &mut keystore.receivers_entropy,
             HomeId(0xfdd09bc7),
             NodeId(1),
+            NodeId(2),
             public_entropy,
             0,
         );
 
-        let keyring = KeyRing::new(Some(permanent_network_key), None, None, None, None);
+        let keyring = KeyRing::new(None, Some(permanent_network_key), None, None, None, None);
         insert_keyring(&mut keystore.keyrings, HomeId(0xfdd09bc7), keyring);
 
         // Frame 1: Establish SPAN via singlecast handshake

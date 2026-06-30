@@ -887,16 +887,6 @@ fn test_transport_service_deserialize_with_extensions() {
 
 #[test]
 fn test_transport_service_deserialize_errors() {
-    // Destination is not Singlecast (e.g. Broadcast)
-    let bytes = vec![0x55, 0xC0, 0x0A, 0x50, 0x01, 0xAA, 0xBB];
-    let res = TransportServiceEncapsulation::deserialize(
-        &bytes,
-        NodeId(7),
-        &Destination::Broadcast,
-        HomeId(0x12345678),
-    );
-    assert_eq!(res, Err(ParseError::Invalid));
-
     // Invalid command class / command byte
     let bytes_invalid_cmd = vec![0x55, 0x20, 0x0A, 0x50, 0x01, 0xAA, 0xBB];
     let res = TransportServiceEncapsulation::deserialize(

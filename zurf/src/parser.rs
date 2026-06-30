@@ -3,7 +3,7 @@
 use crate::frame::{Frame, FrameType};
 use crate::keys::{KeyStore, LruKeyStore};
 use crate::mpdu::{EncapsulationCommand, TransportServiceEncapsulation};
-use crate::types::{Destination, HomeId, NodeId, ParseError, ParseResult};
+use crate::types::{Destination, FixedKeyValueQueue, HomeId, NodeId, ParseError, ParseResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportServiceCache {
@@ -87,6 +87,7 @@ impl TransportServiceCache {
 pub struct Parser {
     pub(crate) keystore: LruKeyStore,
     transport_service_cache: [TransportServiceCache; 5],
+    s0_first_segment_cache: FixedKeyValueQueue<10, u64, Vec<u8>>,
     next_transport_service_index: usize,
 }
 
@@ -95,6 +96,7 @@ impl Parser {
         Self {
             keystore,
             transport_service_cache: Default::default(),
+            s0_first_segment_cache: Default::default(),
             next_transport_service_index: 0,
         }
     }
@@ -218,8 +220,10 @@ impl Parser {
     ) -> EncapsulationCommand {
         match &mut command {
             EncapsulationCommand::S2Nonce(nonce_report) => {
-                self.keystore
-                    .cache_s2_nonce(home, sender, nonce_report.clone());
+                if let crate::types::Destination::Single(receiver) = destination {
+                    self.keystore
+                        .cache_s2_nonce(home, sender, *receiver, nonce_report.clone());
+                }
             }
             EncapsulationCommand::Security2Encrypted(encrypted, items) => {
                 command = self.keystore.decrypt_s2(
@@ -230,6 +234,68 @@ impl Parser {
                     encrypted.clone(),
                     items,
                 );
+            }
+            EncapsulationCommand::S0Nonce(receivers_nonce) => {
+                if let crate::types::Destination::Single(receiver) = destination {
+                    self.keystore
+                        .cache_s0_nonce(home, *receiver, sender, receivers_nonce.clone());
+                }
+            }
+            EncapsulationCommand::Security0Encrypted(encapsulation, payload) => {
+                if let crate::types::Destination::Single(receiver) = destination
+                    && let Some((decrypted_encapsulation, payload)) =
+                        self.keystore
+                            .decrypt_s0(home, sender, *receiver, encapsulation, payload)
+                {
+                    match decrypted_encapsulation.sequence_part {
+                        crate::security::s0::SequencePart::First => {
+                            let key = (home.0 as u64) << 32
+                                | (sender.0 as u64) << 16
+                                | (receiver.0 as u64) << 8
+                                | decrypted_encapsulation.sequence_number.unwrap_or(0) as u64;
+                            self.s0_first_segment_cache.push(key, payload.clone());
+                            command = EncapsulationCommand::Security0DecryptedFirst(
+                                decrypted_encapsulation,
+                                payload,
+                            );
+                        }
+                        crate::security::s0::SequencePart::Second => {
+                            let key = (home.0 as u64) << 32
+                                | (sender.0 as u64) << 16
+                                | (receiver.0 as u64) << 8
+                                | decrypted_encapsulation.sequence_number.unwrap_or(0) as u64;
+                            if let Some(cached) = self.s0_first_segment_cache.get(&key) {
+                                let mut first = cached.clone();
+                                first.extend_from_slice(payload.as_slice());
+                                command = EncapsulationCommand::Security0Decrypted(
+                                    decrypted_encapsulation,
+                                    Box::new(EncapsulationCommand::parse(
+                                        std::mem::take(&mut first),
+                                        sender,
+                                        destination,
+                                        home,
+                                    )),
+                                );
+                            } else {
+                                command = EncapsulationCommand::Security0DecryptedSecond(
+                                    decrypted_encapsulation,
+                                    payload,
+                                );
+                            }
+                        }
+                        crate::security::s0::SequencePart::Complete => {
+                            command = EncapsulationCommand::Security0Decrypted(
+                                decrypted_encapsulation,
+                                Box::new(EncapsulationCommand::parse(
+                                    payload,
+                                    sender,
+                                    destination,
+                                    home,
+                                )),
+                            );
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -343,4 +409,226 @@ mod tests {
         let result = cache.append_segment(&make_segment(0, 3));
         assert!(result);
     }
+
+    fn make_s0_encrypted_frame(
+        plaintext: &[u8],
+        keys: &crate::security::s0::NetworkKeyExpansion,
+        sender: NodeId,
+        receiver: NodeId,
+        sender_nonce: &crate::security::s0::NoncePartial,
+        receivers_nonce: &crate::security::s0::NoncePartial,
+        nonce_requested: bool,
+    ) -> Vec<u8> {
+        use aes::{Aes128, Block, cipher::{BlockCipherEncrypt, KeyInit}};
+
+        let combined_nonce = sender_nonce.to_full(receivers_nonce);
+
+        // 1. Encrypt payload using AES-OFB
+        let mut block = Block::from(combined_nonce.0);
+        let encryption_key = Aes128::new_from_slice(&keys.encryption_key.0).unwrap();
+        let keystream = std::iter::repeat_with(move || {
+            encryption_key.encrypt_block(&mut block);
+            block
+        })
+        .flat_map(|b| b.into_iter());
+
+        let ciphertext: Vec<u8> = plaintext
+            .iter()
+            .zip(keystream)
+            .map(|(p, k)| p ^ k)
+            .collect();
+
+        // 2. Calculate MAC
+        let node_id_length = 1; // assuming mesh/8-bit IDs
+        let auth_len = combined_nonce.0.len() + (2 * node_id_length) + 2 + ciphertext.len();
+        let padding_len = (16 - (auth_len % 16)) % 16;
+        let mut auth_data = Vec::with_capacity(auth_len + padding_len);
+        auth_data.extend_from_slice(&combined_nonce.0);
+        auth_data.push(if nonce_requested { 0xC1 } else { 0x81 });
+        auth_data.push(sender.0 as u8);
+        auth_data.push(receiver.0 as u8);
+        auth_data.push(ciphertext.len() as u8);
+        auth_data.extend_from_slice(&ciphertext);
+        auth_data.extend(std::iter::repeat_n(0, padding_len));
+
+        let authentication_key = Aes128::new_from_slice(&keys.authentication_key.0).unwrap();
+        let final_state = auth_data
+            .chunks_exact(16)
+            .fold([0u8; 16], |mut state, chunk| {
+                state
+                    .iter_mut()
+                    .zip(chunk.iter())
+                    .for_each(|(sb, cb)| *sb ^= cb);
+                let mut b = Block::from(state);
+                authentication_key.encrypt_block(&mut b);
+                b.into()
+            });
+        let mac: [u8; 8] = final_state[..8].try_into().unwrap();
+
+        // 3. Serialize
+        let mut data = Vec::new();
+        data.push(0x98);
+        data.push(if nonce_requested { 0xC1 } else { 0x81 });
+        data.extend_from_slice(&sender_nonce.0);
+        data.extend_from_slice(&ciphertext);
+        data.push(receivers_nonce.0[0]); // receivers_nonce_id
+        data.extend_from_slice(&mac);
+        data
+    }
+
+    #[test]
+    fn test_parser_s0_decryption() {
+        use crate::security::Key;
+        use crate::keys::KeyRing;
+
+        let mut keystore = LruKeyStore::default();
+        let home = HomeId(0xfdd09bc7);
+        let sender = NodeId(1);
+        let receiver = NodeId(0xF);
+
+        // 1. Configure network keyring with the S0 key
+        let network_key = Key(hex_literal::hex!("F9146ECC78D0036F1A4C9F55141C8989"));
+        let keyring = KeyRing::new(Some(network_key), None, None, None, None, None);
+        keystore.insert_keyring(home, keyring);
+
+        // 2. Cache the S0 receiver's partial nonce
+        let nonce_report_bytes = hex_literal::hex!("988041C9DDA4DE802A37");
+        let receivers_nonce = crate::security::s0::NoncePartial(
+            nonce_report_bytes[2..].try_into().unwrap(),
+        );
+        keystore.cache_s0_nonce(home, sender, receiver, receivers_nonce);
+
+        let mut parser = Parser::new(keystore);
+
+        // 3. Process the S0 Encrypted frame
+        let encrypted_frame_bytes = hex_literal::hex!(
+            "9881CBC621CCAE827E1F7C7F408AC09F1D8BD0B35A9641729714507C170DA3"
+        );
+        let command = EncapsulationCommand::parse(
+            encrypted_frame_bytes.to_vec(),
+            sender,
+            &Destination::Single(receiver),
+            home,
+        );
+
+        let processed = parser.process_encap(
+            home,
+            sender,
+            &Destination::Single(receiver),
+            false,
+            command,
+        );
+
+        // Verify it decrypted to Security0Decrypted
+        match processed {
+            EncapsulationCommand::Security0Decrypted(decrypted_info, inner_cmd) => {
+                assert!(!decrypted_info.nonce_requested);
+                assert_eq!(decrypted_info.sequence_number, None);
+                assert_eq!(decrypted_info.receivers_nonce, 0x41);
+
+                match *inner_cmd {
+                    EncapsulationCommand::Unencapsulated(payload) => {
+                        let expected_payload = hex_literal::hex!("6c018207630b0100000000");
+                        assert_eq!(payload, expected_payload);
+                    }
+                    _ => panic!("Expected Unencapsulated inner command"),
+                }
+            }
+            _ => panic!("Expected Security0Decrypted, got {:?}", processed),
+        }
+    }
+
+    #[test]
+    fn test_parser_s0_fragmented_assembly() {
+        use crate::security::Key;
+        use crate::keys::KeyRing;
+
+        let mut keystore = LruKeyStore::default();
+        let home = HomeId(0xfdd09bc7);
+        let sender = NodeId(1);
+        let receiver = NodeId(0xF);
+
+        // Configure keyring and cache nonces
+        let network_key = Key(hex_literal::hex!("F9146ECC78D0036F1A4C9F55141C8989"));
+        let keys = crate::security::s0::NetworkKeyExpansion::new(&network_key);
+        let keyring = KeyRing::new(Some(network_key), None, None, None, None, None);
+        keystore.insert_keyring(home, keyring);
+
+        let sender_nonce_1 = crate::security::s0::NoncePartial([0xAA; 8]);
+        let sender_nonce_2 = crate::security::s0::NoncePartial([0xBB; 8]);
+        let receivers_nonce = crate::security::s0::NoncePartial([0x41; 8]);
+        keystore.cache_s0_nonce(home, sender, receiver, receivers_nonce.clone());
+
+        let mut parser = Parser::new(keystore);
+
+        let seq_num = 5u8;
+        let first_control_byte = 0b0001_0000 | seq_num; // 0x15
+        let second_control_byte = 0b0011_0000 | seq_num; // 0x35
+
+        let mut first_plaintext = vec![first_control_byte];
+        first_plaintext.extend_from_slice(&[0x01, 0x02, 0x03]);
+
+        let mut second_plaintext = vec![second_control_byte];
+        second_plaintext.extend_from_slice(&[0x04, 0x05]);
+
+        let first_frame_bytes = make_s0_encrypted_frame(
+            &first_plaintext,
+            &keys,
+            sender,
+            receiver,
+            &sender_nonce_1,
+            &receivers_nonce,
+            false,
+        );
+
+        let second_frame_bytes = make_s0_encrypted_frame(
+            &second_plaintext,
+            &keys,
+            sender,
+            receiver,
+            &sender_nonce_2,
+            &receivers_nonce,
+            false,
+        );
+
+        let cmd_1 = EncapsulationCommand::parse(
+            first_frame_bytes,
+            sender,
+            &Destination::Single(receiver),
+            home,
+        );
+        let res_1 = parser.process_encap(home, sender, &Destination::Single(receiver), false, cmd_1);
+
+        match res_1 {
+            EncapsulationCommand::Security0DecryptedFirst(dec, payload) => {
+                assert_eq!(dec.sequence_number, Some(seq_num));
+                assert_eq!(dec.sequence_part, crate::security::s0::SequencePart::First);
+                assert_eq!(payload, vec![0x01, 0x02, 0x03]);
+            }
+            _ => panic!("Expected Security0DecryptedFirst, got {:?}", res_1),
+        }
+
+        let cmd_2 = EncapsulationCommand::parse(
+            second_frame_bytes,
+            sender,
+            &Destination::Single(receiver),
+            home,
+        );
+        let res_2 = parser.process_encap(home, sender, &Destination::Single(receiver), false, cmd_2);
+
+        match res_2 {
+            EncapsulationCommand::Security0Decrypted(dec, inner_cmd) => {
+                assert_eq!(dec.sequence_number, Some(seq_num));
+                assert_eq!(dec.sequence_part, crate::security::s0::SequencePart::Second);
+                match *inner_cmd {
+                    EncapsulationCommand::Unencapsulated(full_payload) => {
+                        assert_eq!(full_payload, vec![0x01, 0x02, 0x03, 0x04, 0x05]);
+                    }
+                    _ => panic!("Expected inner command to be Unencapsulated"),
+                }
+            }
+            _ => panic!("Expected Security0Decrypted, got {:?}", res_2),
+        }
+    }
 }
+

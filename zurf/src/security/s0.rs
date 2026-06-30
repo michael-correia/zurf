@@ -38,10 +38,10 @@ impl NetworkKeyExpansion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoncePartial([u8; 8]);
+pub struct NoncePartial(pub [u8; 8]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NonceFull([u8; 16]);
+pub struct NonceFull(pub [u8; 16]);
 
 impl NoncePartial {
     pub fn to_full(&self, nonce_partial: &NoncePartial) -> NonceFull {

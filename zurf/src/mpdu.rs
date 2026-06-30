@@ -3,7 +3,10 @@
 use zurf_enum_derive::TryFromU8;
 
 use crate::{
-    security::s2::{EncryptedEncapsulation, NonceReport},
+    security::{
+        s0::NoncePartial,
+        s2::{EncryptedEncapsulation, NonceReport},
+    },
     types::{
         Channel, DataSpeed, Destination, HomeId, Hop, NodeId, ParseError, ParseResult, Rssi,
         RssiError, lr_rssi_from_byte, noise_floor_from_byte, tx_power_from_byte,
@@ -147,10 +150,10 @@ pub enum EncapsulationCommand {
     Security2Encrypted(EncryptedEncapsulation, Vec<u8>),
     Security2Decrypted(EncryptedEncapsulation, Box<EncapsulationCommand>),
     Security0Encrypted(crate::security::s0::EncryptedEncapsulation, Vec<u8>),
-    Security0DecryptedFirst(crate::security::s0::EncryptedEncapsulation, Vec<u8>),
-    Security0DecryptedSecond(crate::security::s0::EncryptedEncapsulation, Vec<u8>),
+    Security0DecryptedFirst(crate::security::s0::DecryptedEncapsulation, Vec<u8>),
+    Security0DecryptedSecond(crate::security::s0::DecryptedEncapsulation, Vec<u8>),
     Security0Decrypted(
-        crate::security::s0::EncryptedEncapsulation,
+        crate::security::s0::DecryptedEncapsulation,
         Box<EncapsulationCommand>,
     ),
     Security0(Box<EncapsulationCommand>),
@@ -158,6 +161,7 @@ pub enum EncapsulationCommand {
     MultiCommand(Vec<EncapsulationCommand>),
     //MultiChannel ?,
     S2Nonce(NonceReport),
+    S0Nonce(crate::security::s0::NoncePartial),
     TransportFirstSegment(TransportServiceEncapsulation),
     TransportSegment(TransportServiceEncapsulation),
     Unencapsulated(Vec<u8>),
@@ -171,6 +175,13 @@ impl EncapsulationCommand {
         home: crate::types::HomeId,
     ) -> Self {
         match data.get(..2) {
+            Some(&[0x98, 0x80]) => {
+                if data.len() == 10 {
+                    EncapsulationCommand::S0Nonce(NoncePartial(data[2..].try_into().unwrap()))
+                } else {
+                    EncapsulationCommand::Unencapsulated(data)
+                }
+            }
             Some(&[0x98, 0x81]) | Some(&[0x98, 0xC1]) => {
                 let frame = crate::security::s0::EncryptedEncapsulation::deserialize(&data);
                 if let Some((encapsulation, payload)) = frame {
