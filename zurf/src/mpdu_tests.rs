@@ -144,9 +144,13 @@ fn test_deserialize_real_zniffer_data() {
     assert_eq!(mpdu1.destination, Destination::Single(NodeId(6)));
     assert_eq!(
         mpdu1.payload,
-        Some(EncapsulationCommand::Unencapsulated(vec![
-            0x60, 0x0D, 0x01, 0x02, 0x25, 0x01, 0xFF
-        ]))
+        Some(EncapsulationCommand::MultiChannel(
+            MultiChannelEncapsulation {
+                source_endpoint: 1,
+                destination_endpoints: vec![2],
+            },
+            Box::new(EncapsulationCommand::Unencapsulated(vec![0x25, 0x01, 0xFF]))
+        ))
     );
     assert_eq!(mpdu1.checksum, Some(CRCMode::CrcCcitt(0x0182)));
     assert!(remainder1.is_empty());
@@ -948,4 +952,188 @@ fn test_encapsulation_command_parse_transport_service() {
             parsed
         );
     }
+}
+
+#[test]
+fn test_encapsulation_command_parse_multi_command() {
+    let multi_cmd_bytes = vec![
+        0x8F, 0x01, 0x04, // MultiCommand Encap, 4 commands
+        0x03, 0x80, 0x03, 0x64, // Cmd 1: Battery Report (100%)
+        0x04, 0x30, 0x03, 0xFF, 0x0C, // Cmd 2: Sensor Binary Report (Motion)
+        0x05, 0x31, 0x05, 0x03, 0x01, 0x56, // Cmd 3: Sensor Multilevel Report (Luminance 86%)
+        0x06, 0x31, 0x05, 0x01, 0x22, 0x00,
+        0xE1, // Cmd 4: Sensor Multilevel Report (Temp 22.5 C)
+    ];
+
+    let parsed = EncapsulationCommand::parse(
+        multi_cmd_bytes,
+        NodeId(0x97),
+        &Destination::Single(NodeId(1)),
+        HomeId(0x12345678),
+    );
+
+    assert_eq!(
+        parsed,
+        EncapsulationCommand::MultiCommand(vec![
+            EncapsulationCommand::Unencapsulated(vec![0x80, 0x03, 0x64]),
+            EncapsulationCommand::Unencapsulated(vec![0x30, 0x03, 0xFF, 0x0C]),
+            EncapsulationCommand::Unencapsulated(vec![0x31, 0x05, 0x03, 0x01, 0x56]),
+            EncapsulationCommand::Unencapsulated(vec![0x31, 0x05, 0x01, 0x22, 0x00, 0xE1]),
+        ])
+    );
+}
+
+#[test]
+fn test_encapsulation_command_parse_multi_channel_bitmask() {
+    // 0x60, 0x0D: MultiChannel Cmd Encap
+    // 0x02: source_endpoint = 2
+    // 0x80 | 0b0010_0101 (0xA5): bitmask = true, bits 0, 2, 5 set -> endpoints 1, 3, 6
+    // 0x25, 0x01, 0xFF: Switch Binary Set (0xFF)
+    let bytes = vec![0x60, 0x0D, 0x02, 0xA5, 0x25, 0x01, 0xFF];
+
+    let parsed = EncapsulationCommand::parse(
+        bytes,
+        NodeId(1),
+        &Destination::Single(NodeId(6)),
+        HomeId(0xF9E0F220),
+    );
+
+    assert_eq!(
+        parsed,
+        EncapsulationCommand::MultiChannel(
+            MultiChannelEncapsulation {
+                source_endpoint: 2,
+                destination_endpoints: vec![1, 3, 6],
+            },
+            Box::new(EncapsulationCommand::Unencapsulated(vec![0x25, 0x01, 0xFF]))
+        )
+    );
+}
+
+#[test]
+fn test_encapsulation_command_parse_supervision_get() {
+    // 0x6C, 0x01: Supervision Get
+    // 0x15: status_updates = false (bit 7 = 0), session = 21 (0x15)
+    // 0x03: encapsulated_length = 3
+    // 0x25, 0x01, 0x00: Switch Binary Set (0x00)
+    let bytes = vec![0x6C, 0x01, 0x15, 0x03, 0x25, 0x01, 0x00];
+
+    let parsed = EncapsulationCommand::parse(
+        bytes,
+        NodeId(1),
+        &Destination::Single(NodeId(2)),
+        HomeId(0x12345678),
+    );
+
+    assert_eq!(
+        parsed,
+        EncapsulationCommand::SupervisionGet(
+            SupervisionGetEncapsulation {
+                status_updates: false,
+                session: 21,
+            },
+            Box::new(EncapsulationCommand::Unencapsulated(vec![0x25, 0x01, 0x00]))
+        )
+    );
+}
+
+#[test]
+fn test_encapsulation_command_parse_invalid_fallbacks() {
+    let sender = NodeId(1);
+    let dest = Destination::Single(NodeId(2));
+    let home = HomeId(0x12345678);
+
+    // 1. SupervisionGet: too short (< 5 bytes)
+    let sup_short = vec![0x6C, 0x01, 0x82, 0x01];
+    assert_eq!(
+        EncapsulationCommand::parse(sup_short.clone(), sender, &dest, home),
+        EncapsulationCommand::Unencapsulated(sup_short)
+    );
+
+    // 2. SupervisionGet: encapsulated_length exceeds remaining bytes (4 + 5 > 7)
+    let sup_truncated = vec![0x6C, 0x01, 0x82, 0x05, 0x25, 0x01, 0xFF];
+    assert_eq!(
+        EncapsulationCommand::parse(sup_truncated.clone(), sender, &dest, home),
+        EncapsulationCommand::Unencapsulated(sup_truncated)
+    );
+
+    // 3. MultiChannel: too short (< 4 bytes)
+    let mc_short = vec![0x60, 0x0D, 0x01];
+    assert_eq!(
+        EncapsulationCommand::parse(mc_short.clone(), sender, &dest, home),
+        EncapsulationCommand::Unencapsulated(mc_short)
+    );
+
+    // 4. MultiCommand: too short (< 5 bytes)
+    let mcmd_short = vec![0x8F, 0x01, 0x01, 0x01];
+    assert_eq!(
+        EncapsulationCommand::parse(mcmd_short.clone(), sender, &dest, home),
+        EncapsulationCommand::Unencapsulated(mcmd_short)
+    );
+
+    // 5. MultiCommand: sub-command length exceeds remaining slice
+    let mcmd_truncated = vec![
+        0x8F, 0x01, 0x02, // 2 commands
+        0x03, 0x80, 0x03, 0x64, // Cmd 1: valid (3 bytes)
+        0x05, 0x30, 0x03, // Cmd 2: claims 5 bytes, only 2 bytes follow
+    ];
+    assert_eq!(
+        EncapsulationCommand::parse(mcmd_truncated.clone(), sender, &dest, home),
+        EncapsulationCommand::Unencapsulated(mcmd_truncated)
+    );
+}
+
+#[test]
+fn test_encapsulation_command_parse_nested() {
+    let sender = NodeId(1);
+    let dest = Destination::Single(NodeId(6));
+    let home = HomeId(0xF9E0F220);
+
+    // 1. MultiChannel wrapping SupervisionGet wrapping Switch Binary Set
+    // [0x60, 0x0D, 0x00, 0x02] -> MultiChannel (src = 0, dst = [2])
+    //   [0x6C, 0x01, 0x87, 0x03] -> SupervisionGet (status_updates = true, session = 7, len = 3)
+    //     [0x25, 0x01, 0xFF] -> Switch Binary Set (0xFF)
+    let mc_supervision_bytes = vec![
+        0x60, 0x0D, 0x00, 0x02, // MultiChannel
+        0x6C, 0x01, 0x87, 0x03, // SupervisionGet
+        0x25, 0x01, 0xFF, // Inner payload
+    ];
+
+    assert_eq!(
+        EncapsulationCommand::parse(mc_supervision_bytes, sender, &dest, home),
+        EncapsulationCommand::MultiChannel(
+            MultiChannelEncapsulation {
+                source_endpoint: 0,
+                destination_endpoints: vec![2],
+            },
+            Box::new(EncapsulationCommand::SupervisionGet(
+                SupervisionGetEncapsulation {
+                    status_updates: true,
+                    session: 7,
+                },
+                Box::new(EncapsulationCommand::Unencapsulated(vec![0x25, 0x01, 0xFF]))
+            ))
+        )
+    );
+
+    // 2. MultiCommand containing a SupervisionGet command and an Unencapsulated command
+    let multi_cmd_nested_bytes = vec![
+        0x8F, 0x01, 0x02, // MultiCommand (2 commands)
+        0x07, 0x6C, 0x01, 0x03, 0x03, 0x25, 0x01, 0xFF, // Cmd 1 (7 bytes): SupervisionGet
+        0x03, 0x80, 0x03, 0x64, // Cmd 2 (3 bytes): Battery Report
+    ];
+
+    assert_eq!(
+        EncapsulationCommand::parse(multi_cmd_nested_bytes, sender, &dest, home),
+        EncapsulationCommand::MultiCommand(vec![
+            EncapsulationCommand::SupervisionGet(
+                SupervisionGetEncapsulation {
+                    status_updates: false,
+                    session: 3,
+                },
+                Box::new(EncapsulationCommand::Unencapsulated(vec![0x25, 0x01, 0xFF]))
+            ),
+            EncapsulationCommand::Unencapsulated(vec![0x80, 0x03, 0x64]),
+        ])
+    );
 }

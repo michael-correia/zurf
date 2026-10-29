@@ -6,8 +6,8 @@ description = "A Z-Wave Zniffer UART protocol parser"
 license = "LGPL-3.0-or-later"
 
 [dependencies]
-aes = { version = "0.9.1", default-features = false }
-ccm = { version = "0.6.0-rc.3", default-features = false, features = ["alloc"] }
+aes = { version = "0.9.3", default-features = false }
+ccm = { version = "0.6.1", default-features = false, features = ["alloc"] }
 cmac = { version = "0.8.0", default-features = false }
 clru = "0.6.3"
 zurf_enum_derive = { path = "enum_derive", version = "0.1.1" }

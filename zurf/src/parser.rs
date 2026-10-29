@@ -419,7 +419,10 @@ mod tests {
         receivers_nonce: &crate::security::s0::NoncePartial,
         nonce_requested: bool,
     ) -> Vec<u8> {
-        use aes::{Aes128, Block, cipher::{BlockCipherEncrypt, KeyInit}};
+        use aes::{
+            Aes128, Block,
+            cipher::{BlockCipherEncrypt, KeyInit},
+        };
 
         let combined_nonce = sender_nonce.to_full(receivers_nonce);
 
@@ -478,8 +481,8 @@ mod tests {
 
     #[test]
     fn test_parser_s0_decryption() {
-        use crate::security::Key;
         use crate::keys::KeyRing;
+        use crate::security::Key;
 
         let mut keystore = LruKeyStore::default();
         let home = HomeId(0xfdd09bc7);
@@ -493,17 +496,15 @@ mod tests {
 
         // 2. Cache the S0 receiver's partial nonce
         let nonce_report_bytes = hex_literal::hex!("988041C9DDA4DE802A37");
-        let receivers_nonce = crate::security::s0::NoncePartial(
-            nonce_report_bytes[2..].try_into().unwrap(),
-        );
+        let receivers_nonce =
+            crate::security::s0::NoncePartial(nonce_report_bytes[2..].try_into().unwrap());
         keystore.cache_s0_nonce(home, sender, receiver, receivers_nonce);
 
         let mut parser = Parser::new(keystore);
 
         // 3. Process the S0 Encrypted frame
-        let encrypted_frame_bytes = hex_literal::hex!(
-            "9881CBC621CCAE827E1F7C7F408AC09F1D8BD0B35A9641729714507C170DA3"
-        );
+        let encrypted_frame_bytes =
+            hex_literal::hex!("9881CBC621CCAE827E1F7C7F408AC09F1D8BD0B35A9641729714507C170DA3");
         let command = EncapsulationCommand::parse(
             encrypted_frame_bytes.to_vec(),
             sender,
@@ -511,13 +512,8 @@ mod tests {
             home,
         );
 
-        let processed = parser.process_encap(
-            home,
-            sender,
-            &Destination::Single(receiver),
-            false,
-            command,
-        );
+        let processed =
+            parser.process_encap(home, sender, &Destination::Single(receiver), false, command);
 
         // Verify it decrypted to Security0Decrypted
         match processed {
@@ -527,11 +523,17 @@ mod tests {
                 assert_eq!(decrypted_info.receivers_nonce, 0x41);
 
                 match *inner_cmd {
-                    EncapsulationCommand::Unencapsulated(payload) => {
-                        let expected_payload = hex_literal::hex!("6c018207630b0100000000");
-                        assert_eq!(payload, expected_payload);
+                    EncapsulationCommand::SupervisionGet(supervision_info, supervised_cmd) => {
+                        assert!(supervision_info.status_updates);
+                        assert_eq!(supervision_info.session, 2);
+                        assert_eq!(
+                            *supervised_cmd,
+                            EncapsulationCommand::Unencapsulated(
+                                hex_literal::hex!("630b0100000000").to_vec()
+                            )
+                        );
                     }
-                    _ => panic!("Expected Unencapsulated inner command"),
+                    _ => panic!("Expected SupervisionGet inner command"),
                 }
             }
             _ => panic!("Expected Security0Decrypted, got {:?}", processed),
@@ -540,8 +542,8 @@ mod tests {
 
     #[test]
     fn test_parser_s0_fragmented_assembly() {
-        use crate::security::Key;
         use crate::keys::KeyRing;
+        use crate::security::Key;
 
         let mut keystore = LruKeyStore::default();
         let home = HomeId(0xfdd09bc7);
@@ -597,7 +599,8 @@ mod tests {
             &Destination::Single(receiver),
             home,
         );
-        let res_1 = parser.process_encap(home, sender, &Destination::Single(receiver), false, cmd_1);
+        let res_1 =
+            parser.process_encap(home, sender, &Destination::Single(receiver), false, cmd_1);
 
         match res_1 {
             EncapsulationCommand::Security0DecryptedFirst(dec, payload) => {
@@ -614,7 +617,8 @@ mod tests {
             &Destination::Single(receiver),
             home,
         );
-        let res_2 = parser.process_encap(home, sender, &Destination::Single(receiver), false, cmd_2);
+        let res_2 =
+            parser.process_encap(home, sender, &Destination::Single(receiver), false, cmd_2);
 
         match res_2 {
             EncapsulationCommand::Security0Decrypted(dec, inner_cmd) => {
@@ -631,4 +635,3 @@ mod tests {
         }
     }
 }
-

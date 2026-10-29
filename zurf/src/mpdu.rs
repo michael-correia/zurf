@@ -3,6 +3,7 @@
 use zurf_enum_derive::TryFromU8;
 
 use crate::{
+    encapsulation::{MultiChannelEncapsulation, SupervisionGetEncapsulation},
     security::{
         s0::NoncePartial,
         s2::{EncryptedEncapsulation, NonceReport},
@@ -146,7 +147,7 @@ impl TransportServiceEncapsulation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncapsulationCommand {
-    SupervisionGet(Box<EncapsulationCommand>),
+    SupervisionGet(SupervisionGetEncapsulation, Box<EncapsulationCommand>),
     Security2Encrypted(EncryptedEncapsulation, Vec<u8>),
     Security2Decrypted(EncryptedEncapsulation, Box<EncapsulationCommand>),
     Security0Encrypted(crate::security::s0::EncryptedEncapsulation, Vec<u8>),
@@ -159,7 +160,10 @@ pub enum EncapsulationCommand {
     Security0(Box<EncapsulationCommand>),
     CRC16(Box<EncapsulationCommand>),
     MultiCommand(Vec<EncapsulationCommand>),
-    //MultiChannel ?,
+    MultiChannel(
+        crate::encapsulation::MultiChannelEncapsulation,
+        Box<EncapsulationCommand>,
+    ),
     S2Nonce(NonceReport),
     S0Nonce(crate::security::s0::NoncePartial),
     TransportFirstSegment(TransportServiceEncapsulation),
@@ -220,6 +224,88 @@ impl EncapsulationCommand {
                 } else {
                     EncapsulationCommand::Unencapsulated(data)
                 }
+            }
+            Some(&[0x6C, 0x01]) => {
+                if data.len() < 5 {
+                    return EncapsulationCommand::Unencapsulated(data);
+                }
+                let status_updates = data[2] & 0b1000_0000 == 0b1000_0000;
+                let session = data[2] & 0b0011_1111;
+                let encapsulated_length = data[3] as usize;
+                if data.len() < 4 + encapsulated_length {
+                    return EncapsulationCommand::Unencapsulated(data);
+                }
+                let remaining_data = Box::new(EncapsulationCommand::parse(
+                    data[4..4 + encapsulated_length].to_vec(),
+                    sender,
+                    receiver,
+                    home,
+                ));
+                EncapsulationCommand::SupervisionGet(
+                    SupervisionGetEncapsulation {
+                        status_updates,
+                        session,
+                    },
+                    remaining_data,
+                )
+            }
+            Some(&[0x60, 0x0D]) => {
+                if data.len() < 4 {
+                    return EncapsulationCommand::Unencapsulated(data);
+                }
+                let source_endpoint = data[2] & 0b0111_1111;
+                let is_bitmask = data[3] & 0b1000_0000 == 0b1000_0000;
+                let value = data[3] & 0b0111_1111;
+                let remaining = data[4..].to_vec();
+                if !is_bitmask {
+                    return EncapsulationCommand::MultiChannel(
+                        MultiChannelEncapsulation {
+                            source_endpoint,
+                            destination_endpoints: vec![value],
+                        },
+                        Box::new(EncapsulationCommand::parse(
+                            remaining, sender, receiver, home,
+                        )),
+                    );
+                }
+                let mut destination_endpoints = Vec::<u8>::new();
+                for i in 0..7 {
+                    if (value & (1 << i)) != 0 {
+                        destination_endpoints.push(i as u8 + 1);
+                    }
+                }
+
+                EncapsulationCommand::MultiChannel(
+                    MultiChannelEncapsulation {
+                        source_endpoint,
+                        destination_endpoints,
+                    },
+                    Box::new(EncapsulationCommand::parse(
+                        remaining, sender, receiver, home,
+                    )),
+                )
+            }
+            Some(&[0x8F, 0x01]) => {
+                if data.len() < 5 {
+                    return EncapsulationCommand::Unencapsulated(data);
+                }
+                let num_cmds = data[2] as usize;
+                let mut commands = Vec::<EncapsulationCommand>::with_capacity(num_cmds);
+                let mut i = 3;
+                while i < data.len() {
+                    let cmd_len = data[i] as usize;
+                    let Some((cmd_data, _)) = data[i + 1..].split_at_checked(cmd_len) else {
+                        return EncapsulationCommand::Unencapsulated(data);
+                    };
+                    commands.push(EncapsulationCommand::parse(
+                        cmd_data.to_vec(),
+                        sender,
+                        receiver,
+                        home,
+                    ));
+                    i += cmd_len + 1;
+                }
+                EncapsulationCommand::MultiCommand(commands)
             }
             _ => EncapsulationCommand::Unencapsulated(data),
         }
